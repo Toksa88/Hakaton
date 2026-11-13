@@ -14,6 +14,8 @@ import pandas as pd
 
 def weekly(activity: pd.Series) -> pd.DataFrame:
     """Денний ряд -> сума по ISO-тижнях. Тиждень 53 зливаємо з 52, щоб роки були порівнянні."""
+    # isocalendar() дає для кожної дати (рік, номер тижня, день тижня) за стандартом ISO:
+    # тиждень починається в понеділок, тижнів у році 52 або 53
     iso = activity.index.isocalendar()
     df = pd.DataFrame({
         "year": iso["year"].to_numpy(),
@@ -27,6 +29,7 @@ def calendar_matrix(activity: pd.Series, freq: str = "week") -> pd.DataFrame:
     """Рядки = роки, стовпці = тиждень (1..52) або місяць (1..12)."""
     if freq == "month":
         df = pd.DataFrame({"year": activity.index.year, "col": activity.index.month, "value": activity.to_numpy()})
+        # pivot_table "розвертає" довгу таблицю в матрицю: рядки = роки, стовпці = місяці, у клітинках — сума
         return df.pivot_table(index="year", columns="col", values="value", aggfunc="sum").reindex(columns=range(1, 13))
     w = weekly(activity)
     return w.pivot_table(index="year", columns="week", values="value", aggfunc="sum").reindex(columns=range(1, 53))
@@ -35,6 +38,8 @@ def calendar_matrix(activity: pd.Series, freq: str = "week") -> pd.DataFrame:
 def climatology(activity: pd.Series) -> pd.DataFrame:
     """Для кожного тижня року: середнє, медіана, стандартне відхилення по всіх роках."""
     w = weekly(activity)
+    # Для кожного номера тижня беремо значення з усіх років і рахуємо статистики.
+    # p90 = 90-й перцентиль: лише 10% років були вищими за це значення.
     return w.groupby("week")["value"].agg(mean="mean", median="median", std="std", p90=lambda s: s.quantile(0.9))
 
 
@@ -46,11 +51,15 @@ def anomalies(activity: pd.Series, z_thresh: float = 2.0) -> pd.DataFrame:
     """
     w = weekly(activity)
     g = w.groupby("week")["value"]
+    # transform, на відміну від agg, повертає значення для КОЖНОГО рядка:
+    # кожен (рік, тиждень) отримує медіану свого тижня по всіх роках — з нею і порівнюємо
     med = g.transform("median")
+    # MAD = медіана абсолютних відхилень від медіани — "стійкий" аналог стандартного відхилення
     mad = g.transform(lambda s: (s - s.median()).abs().median())
     scale = (1.4826 * mad).replace(0, np.nan)
     # якщо MAD=0 (тиждень майже завжди без пожеж) — беремо std, а ще мінімум 1
     scale = scale.fillna(g.transform("std")).fillna(1.0).clip(lower=1.0)
+    # z = на скільки "типових розкидів" цей тиждень вище (+) чи нижче (-) за норму
     w["z"] = (w["value"] - med) / scale
     w["norm"] = med
     w["kind"] = np.where(w["z"] >= z_thresh, "вище норми", np.where(w["z"] <= -z_thresh, "нижче норми", ""))
@@ -63,8 +72,9 @@ def critical_periods(activity: pd.Series, top_share: float = 0.25) -> pd.DataFra
     Сусідні критичні тижні склеюємо у періоди ("тижні 12–17").
     """
     clim = climatology(activity)
-    thr = clim["mean"].quantile(1 - top_share)
+    thr = clim["mean"].quantile(1 - top_share)  # поріг: 75-й перцентиль середньої активності
     crit = clim.index[clim["mean"] >= thr].tolist()
+    # Склеюємо послідовні номери тижнів: [11,12,13,29,30] -> [[11,12,13],[29,30]]
     periods, cur = [], []
     for w in crit:
         if cur and w != cur[-1] + 1:
