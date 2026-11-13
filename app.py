@@ -65,17 +65,11 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg):
       activity    — ГОЛОВНИЙ результат: єдиний ряд активності горіння по днях
       k           — коефіцієнти калібрування для кожного місяця
       viirs_start — дата, з якої в даних з'являється VIIRS
-    """
-    # Дату початку VIIRS беремо з УСІХ даних (не лише вибраної зони),
-    # бо це властивість супутника, а не регіону.
-    viirs = points.loc[points["sensor"] == "VIIRS", "date"]
-    viirs_start = viirs.min() if not viirs.empty else None
 
-    p = harmonize.filter_points(points, bbox=bbox, start=start, end=end, min_conf=min_conf)
-    cells = harmonize.to_fire_cell_days(p, cell_deg=cell_deg)
-    daily = harmonize.daily_counts(cells, start=start, end=end)
-    activity, k = harmonize.harmonized_series(daily, viirs_start)
-    return p, cells, daily, activity, k, viirs_start
+    Сама логіка — у firecal/harmonize.py (там і пояснення, чому k рахується на всіх роках).
+    Тут лише кеш: @st.cache_data не перераховує, якщо параметри ті самі.
+    """
+    return harmonize.run_pipeline(points, bbox, start, end, min_conf=min_conf, cell_deg=cell_deg)
 
 
 # =====================================================================

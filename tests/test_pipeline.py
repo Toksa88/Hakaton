@@ -66,6 +66,32 @@ def test_harmonized_uses_modis_times_k_before_viirs():
     assert act["2010-06-01"] == 4.0 and act["2013-06-01"] == 4.0  # ряд без "сходинки" у 2012
 
 
+def test_slider_years_do_not_change_k():
+    """Баг, який ми виправили: рік до 2012 має однакове значення, хоч би які роки вибрав слайдер.
+
+    Дані: щодня у квітні 2010–2013 MODIS бачить 1 клітинку (A). З 2012 VIIRS бачить ще одну (B).
+    Отже з 2012 union = 2, MODIS = 1 -> k[квітень] = 2, і квітень 2010 має бути 30 днів × 1 × 2 = 60.
+    Раніше, якщо вибрати 2010–2011 (без VIIRS), k ставав 1 і квітень 2010 давав 30.
+    """
+    rows_m, rows_v = [], []
+    for year in range(2010, 2014):
+        for day in pd.date_range(f"{year}-04-01", f"{year}-04-30"):
+            d = day.strftime("%Y-%m-%d")
+            rows_m.append((50.05, 30.05, 320, d, 1000, 60, 5, 0))       # клітинка A, MODIS
+            if year >= 2012:
+                rows_v.append((50.55, 30.55, 330, d, 1000, "n", 5, 0))  # клітинка B, лише VIIRS
+    points = pd.concat([load.normalize(_modis(rows_m)), load.normalize(_viirs(rows_v))], ignore_index=True)
+
+    def april_2010(start, end):
+        _, _, _, act, k, _ = harmonize.run_pipeline(points, None, start, end)
+        return act["2010-04"].sum(), k[4]
+
+    all_years = april_2010("2010-01-01", "2013-12-31")
+    no_viirs_years = april_2010("2010-01-01", "2011-12-31")  # слайдер лише на роках без VIIRS
+    assert all_years == (60.0, 2.0)
+    assert no_viirs_years == all_years  # той самий рік — те саме число
+
+
 def test_critical_period_found():
     """Якщо щороку квітень у 50 разів активніший — він має стати критичним періодом."""
     idx = pd.date_range("2015-01-01", "2020-12-31")

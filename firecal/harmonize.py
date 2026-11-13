@@ -126,8 +126,8 @@ def calibration_factors(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -
     # Групуємо дні перекриття за номером місяця (1..12) і сумуємо union та modis всередині місяця
     by_m = ov.groupby(ov.index.month)[["union", "modis"]].sum()
     # k_all — один спільний коефіцієнт за весь період перекриття; запасний варіант для "бідних" місяців.
-    # Увага: якщо у вибраних роках немає жодного дня з VIIRS (напр. слайдер 2003–2010),
-    # ov порожній і k_all = 1 — тобто MODIS не підсилюється. Див. нотатки в AGENTS.md.
+    # Якщо в daily немає жодного дня з VIIRS, ov порожній і k_all = 1 — MODIS не підсилюється.
+    # Тому run_pipeline передає сюди ВСІ роки зони, а не лише вибрані слайдером.
     k_all = ov["union"].sum() / ov["modis"].sum() if ov["modis"].sum() > 0 else 1.0
     # replace(0, nan) — щоб не ділити на нуль (результат буде nan, і далі ми його замінимо)
     k = (by_m["union"] / by_m["modis"].replace(0, np.nan))
@@ -157,3 +157,47 @@ def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> 
     # where(умова, інакше): де умова True (день після старту VIIRS) — беремо union, інакше — оцінку est
     act = daily["union"].where(daily.index >= viirs_start, est)
     return act.rename("activity"), k
+
+
+def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nominal", cell_deg: float = 0.1):
+    """
+    Увесь конвеєр: точки -> відбір -> клітинки -> денні суми -> гармонізований ряд.
+
+    ВАЖЛИВО (виправлений баг): коефіцієнти k рахуємо на ВСІХ роках даних цієї зони,
+    а start/end (слайдер років) лише ОБРІЗАЮТЬ результат для показу.
+    Раніше k рахувався тільки на вибраних роках: якщо вибрати 2003–2010 (там немає VIIRS),
+    калібрувати було нема з чим, k ставав 1, і 2005 рік показував ~474 замість ~857.
+    Тобто той самий рік мав різне значення залежно від положення слайдера — так не можна.
+
+    Повертає (p, cells, daily, activity, k, viirs_start):
+      p           — точки після фільтрів (зона, роки, достовірність)
+      cells       — пожежо-клітинко-дні (одна клітинка сітки, що горіла в один день)
+      daily       — по днях: скільки клітинок бачив MODIS, VIIRS, обидва, разом (union)
+      activity    — ГОЛОВНИЙ результат: єдиний ряд активності горіння по днях
+      k           — коефіцієнти калібрування для кожного місяця
+      viirs_start — дата, з якої в даних з'являється VIIRS
+    """
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    # Дату початку VIIRS беремо з УСІХ даних (не лише вибраної зони),
+    # бо це властивість супутника, а не регіону.
+    viirs = points.loc[points["sensor"] == "VIIRS", "date"]
+    viirs_start = viirs.min() if not viirs.empty else None
+
+    # Повний період даних: від 1 січня першого року до 31 грудня останнього.
+    # На ньому рахуємо денні суми і k — незалежно від слайдера.
+    full_start = pd.Timestamp(points["date"].min().year, 1, 1)
+    full_end = pd.Timestamp(points["date"].max().year, 12, 31)
+
+    # Фільтр БЕЗ start/end — беремо всі роки зони
+    p_all = filter_points(points, bbox=bbox, min_conf=min_conf)
+    cells_all = to_fire_cell_days(p_all, cell_deg=cell_deg)
+    daily_all = daily_counts(cells_all, start=full_start, end=full_end)
+    activity_all, k = harmonized_series(daily_all, viirs_start)
+
+    # Тепер лише обрізаємо до вибраних років. .loc[start:end] для таблиці з датами в індексі
+    # = "рядки з датами від start до end включно".
+    p = p_all[p_all["date"].between(start, end)]
+    cells = cells_all[pd.to_datetime(cells_all["date"]).between(start, end)] if not cells_all.empty else cells_all
+    daily = daily_all.loc[start:end]
+    activity = activity_all.loc[start:end]
+    return p, cells, daily, activity, k, viirs_start
