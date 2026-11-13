@@ -127,6 +127,29 @@ def test_early_warning_levels():
     assert analytics.early_warning(act, "2015-03-31")["trend"] > 1
 
 
+def test_oblast_lookup():
+    """Відомі міста потрапляють у свої області; точка в Польщі — поза Україною."""
+    from firecal import regions
+    #              Київ (центр)   Біла Церква    Львів          Одеса          Варшава
+    lat = [50.45, 49.80, 49.84, 46.48, 52.23]
+    lon = [30.52, 30.11, 24.03, 30.73, 21.01]
+    assert regions.oblast_of(lat, lon).tolist() == ["м. Київ", "Київська", "Львівська", "Одеська", ""]
+
+
+def test_filter_by_oblast_and_war():
+    """Фільтр за областю і перемикач "без прифронтових з 2022"."""
+    rows = [
+        (48.0, 37.8, 320, "2021-07-01", 1000, 60, 5, 0),  # Донецька, до війни
+        (48.0, 37.8, 320, "2023-07-01", 1000, 60, 5, 0),  # Донецька, після 24.02.2022
+        (49.84, 24.03, 320, "2023-07-01", 1000, 60, 5, 0),  # Львівська, після 24.02.2022
+    ]
+    pts = load.normalize(_modis(rows))
+    assert len(harmonize.filter_points(pts, oblasts=["Львівська"])) == 1
+    # Без прифронтових з 2022: викидається лише Донецька 2023, Донецька 2021 і Львівська лишаються
+    kept = harmonize.filter_points(pts, exclude_war=True)
+    assert sorted(kept["date"].dt.year.tolist()) == [2021, 2023] and len(kept) == 2
+
+
 def test_critical_period_found():
     """Якщо щороку квітень у 50 разів активніший — він має стати критичним періодом."""
     idx = pd.date_range("2015-01-01", "2020-12-31")
