@@ -27,8 +27,7 @@ import plotly.graph_objects as go   # "ручні" графіки, коли тр
 import streamlit as st              # веб-інтерфейс
 
 # Наш власний код із папки firecal/ (див. опис структури вище)
-from firecal import analytics, harmonize, load
-from firecal.regions import REGIONS
+from firecal import analytics, harmonize, load, regions
 
 # Налаштування сторінки: назва вкладки браузера, іконка, широкий макет. Має бути ПЕРШИМ st-викликом.
 st.set_page_config(page_title="Календар горіння", page_icon="🔥", layout="wide")
@@ -50,12 +49,18 @@ def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> pd.DataFrame:
     if uploaded:
         # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну
         parts = [load.normalize(pd.read_csv(io.BytesIO(b))) for _, b in uploaded]
-        return pd.concat(parts, ignore_index=True)
-    return load.load_cached()
+        pts = pd.concat(parts, ignore_index=True)
+    else:
+        pts = load.load_cached()
+    # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
+    # далі фільтр за областями просто дивиться в цю колонку
+    if not pts.empty:
+        pts["oblast"] = regions.oblast_of(pts["lat"], pts["lon"])
+    return pts
 
 
 @st.cache_data(show_spinner="Гармонізую MODIS і VIIRS…")
-def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg):
+def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg, oblasts, exclude_war):
     """Увесь конвеєр обробки: точки -> відбір -> клітинки -> денні суми -> гармонізований ряд.
 
     Повертає:
@@ -69,7 +74,8 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg):
     Сама логіка — у firecal/harmonize.py (там і пояснення, чому k рахується на всіх роках).
     Тут лише кеш: @st.cache_data не перераховує, якщо параметри ті самі.
     """
-    return harmonize.run_pipeline(points, bbox, start, end, min_conf=min_conf, cell_deg=cell_deg)
+    return harmonize.run_pipeline(points, bbox, start, end, min_conf=min_conf, cell_deg=cell_deg,
+                                  oblasts=oblasts, exclude_war=exclude_war)
 
 
 # =====================================================================
@@ -91,8 +97,10 @@ if points.empty:
                "`python scripts/make_sample_data.py` для тестових даних.")
     st.stop()
 
-# Вибір зони: або готова з REGIONS, або свій прямокутник з координат
-region = st.sidebar.selectbox("Зона інтересу", list(REGIONS) + ["Свій прямокутник"])
+# Вибір зони: група областей, окрема область (справжні межі, regions.ZONES) або свій прямокутник
+region = st.sidebar.selectbox("Зона інтересу", list(regions.ZONES) + ["Свій прямокутник"],
+                              help="Межі областей — справжні (з точністю ~1 км), а не прямокутники.")
+oblasts = None  # None = без фільтра за областями
 if region == "Свій прямокутник":
     c1, c2 = st.sidebar.columns(2)  # дві колонки поруч: "від" і "до"
     lon0 = c1.number_input("Довгота від", value=30.0)
@@ -100,12 +108,25 @@ if region == "Свій прямокутник":
     lat0 = c1.number_input("Широта від", value=46.0)
     lat1 = c2.number_input("Широта до", value=48.0)
     bbox = (lon0, lat0, lon1, lat1)  # bbox = "bounding box", прямокутник (захід, південь, схід, північ)
+    map_box = bbox
 else:
-    bbox = REGIONS[region]
+    oblasts = regions.ZONES[region]
+    bbox = None                         # фільтруємо за областями, а не прямокутником
+    map_box = regions.bbox_of(oblasts)  # прямокутник навколо областей — лише щоб відцентрувати карту
 
-# Слайдер років: межі беремо з самих даних; (y_min, y_max) як значення = діапазон із двома повзунками
+# Перемикач "без зони бойових дій": з 24.02.2022 у прифронтових областях багато хот-спотів
+# від обстрілів, а не від с/г палів — вони спотворюють календар і аномалії
+exclude_war = st.sidebar.checkbox(
+    "Без прифронтових областей з 24.02.2022",
+    help="Викидає точки з областей " + ", ".join(regions.FRONTLINE) + " після початку повномасштабної "
+         "війни: там багато хот-спотів від обстрілів, а не від пожеж рослинності.")
+
+# Слайдер років: межі беремо з самих даних; третій аргумент — діапазон за замовчуванням.
+# default_years відкидає неповні роки на краях (напр. 2000, де MODIS лише з листопада).
 y_min, y_max = int(points["date"].dt.year.min()), int(points["date"].dt.year.max())
-years = st.sidebar.slider("Роки", y_min, y_max, (y_min, y_max))
+years = st.sidebar.slider("Роки", y_min, y_max, analytics.default_years(points["date"]),
+                          help="Неповні роки на краях даних (напр. 2000 — MODIS лише з листопада) "
+                               "за замовчуванням вимкнені, бо виглядають як провал.")
 # Мінімальна достовірність: low пропускає все, high — лише найнадійніші точки
 min_conf = st.sidebar.select_slider("Мін. достовірність", ["low", "nominal", "high"], value="nominal")
 # Розмір клітинки сітки в градусах (0.1° ≈ 8×11 км в Україні). Менше = детальніше, але шумніше.
@@ -118,7 +139,9 @@ if any(n.startswith("SAMPLE") for n in [f.name for f in load.RAW_DIR.glob("*.csv
 # Перетворюємо вибрані роки в дати: з 1 січня першого року до 31 грудня останнього
 start, end = pd.Timestamp(years[0], 1, 1), pd.Timestamp(years[1], 12, 31)
 # Запускаємо обробку (з кешу, якщо параметри не змінились)
-pts, cells, daily, activity, k, viirs_start = run_pipeline(points, bbox, start, end, min_conf, cell_deg)
+# tuple(oblasts) — кеш Streamlit краще працює з кортежами, ніж зі списками
+pts, cells, daily, activity, k, viirs_start = run_pipeline(
+    points, bbox, start, end, min_conf, cell_deg, tuple(oblasts) if oblasts else None, exclude_war)
 
 # =====================================================================
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
@@ -133,16 +156,17 @@ peak_week = int(clim["mean"].idxmax()) if not clim.empty else 0
 m1, m2, m3, m4 = st.columns(4)  # 4 колонки в ряд
 m1.metric("Пожежо-клітинко-днів (гарм.)", f"{activity.sum():,.0f}")  # :,.0f = з роздільником тисяч, без дробів
 # Третій аргумент metric — маленький підпис під числом: приблизна дата початку пікового тижня.
-# fromisocalendar(рік, тиждень, день) -> дата; 2021 тут просто "будь-який рік" для перетворення.
+# week_start(рік, тиждень) -> дата першого дня тижня; 2021 тут просто "будь-який рік" для перетворення.
 m2.metric("Пік сезону", f"тиждень {peak_week}" if peak_week else "—",
-          pd.Timestamp.fromisocalendar(2021, peak_week, 1).strftime("~%d.%m") if peak_week else None)
+          analytics.week_start(2021, peak_week).strftime("~%d.%m") if peak_week else None)
 m3.metric("Аномальних тижнів", len(anom[anom["kind"] == "вище норми"]))
 # (pts.sensor == 'MODIS').sum() — рахуємо True, тобто кількість точок MODIS
 m4.metric("Точок MODIS / VIIRS", f"{(pts.sensor == 'MODIS').sum():,} / {(pts.sensor == 'VIIRS').sum():,}")
 
 # Вкладки. Усе, що всередині "with tab_x:", малюється на відповідній вкладці.
-tab_cal, tab_crit, tab_anom, tab_map, tab_cmp, tab_about = st.tabs(
-    ["📅 Календар", "🔥 Критичні періоди", "⚠️ Аномалії", "🗺️ Карта", "🛰️ MODIS vs VIIRS", "ℹ️ Методика"])
+tab_cal, tab_warn, tab_crit, tab_anom, tab_map, tab_cmp, tab_about = st.tabs(
+    ["📅 Календар", "🚨 Раннє попередження", "🔥 Критичні періоди", "⚠️ Аномалії", "🗺️ Карта",
+     "🛰️ MODIS vs VIIRS", "ℹ️ Методика"])
 
 # =====================================================================
 # 1. КАЛЕНДАР — теплова карта "рік × тиждень". Головний візуал проєкту.
@@ -167,6 +191,57 @@ with tab_cal:
     c1.plotly_chart(fig, width="stretch")
     c2.caption("Кожна клітинка = скільки ділянок сітки горіло за цей період. "
                "Темніше = більше горіння.")
+
+# =====================================================================
+# РАННЄ ПОПЕРЕДЖЕННЯ — "наскільки зараз горить більше, ніж зазвичай у цю пору року?"
+# Для служб раннього попередження: одна дата -> рівень тривоги + чого чекати далі.
+# =====================================================================
+with tab_warn:
+    first_day, last_day = activity.index.min().date(), activity.index.max().date()
+    c1, c2 = st.columns([1, 2])
+    # date_input — календарик для вибору дати; за замовчуванням останній день у даних ("зараз")
+    as_of = c1.date_input("Дата", value=last_day, min_value=first_day, max_value=last_day, format="DD.MM.YYYY",
+                          help="За замовчуванням — останній день у даних. Можна вибрати будь-яку дату в минулому, "
+                               "щоб подивитись, що показала б система тоді (напр. 10.04.2020 — Чорнобильська зона).")
+    window = c1.select_slider("Вікно, днів", [3, 7, 14, 30], value=7,
+                              help="За скільки останніх днів рахуємо активність")
+    ew = analytics.early_warning(activity, as_of, window=window)
+    if not ew:
+        st.info("Замало років для порівняння — виберіть ширший діапазон років.")
+    else:
+        icon, meaning = analytics.LEVELS[ew["level"]]
+        c2.markdown(f"## {icon} Рівень: {ew['level']}")
+        c2.markdown(f"Останні {window} дн. до **{ew['as_of']:%d.%m.%Y}**: {meaning}.")
+        # Прогноз сезону: >1.2 — зазвичай наростає, <0.8 — спадає, між ними — без різких змін
+        t = ew["trend"]
+        if t is not None:
+            if t >= 1.2:
+                c2.markdown(f"📈 За історією, у наступні 4 тижні горіння зазвичай **наростає** (~×{t:.1f}).")
+            elif t <= 0.8:
+                c2.markdown(f"📉 За історією, у наступні 4 тижні горіння зазвичай **спадає** (~×{t:.1f}).")
+            else:
+                c2.markdown("➡️ За історією, у наступні 4 тижні зазвичай без різких змін.")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric(f"Зараз (за {window} дн.)", f"{ew['current']:,.0f}")
+        # delta — маленька стрілка під числом: на скільки зараз вище/нижче норми
+        m2.metric("Норма для цих днів (медіана)", f"{ew['median']:,.0f}",
+                  delta=f"{ew['current'] - ew['median']:+,.0f} від норми", delta_color="inverse")
+        m3.metric("Зараз горить більше, ніж у", f"{ew['percentile']:.0f}% років")
+
+        # Стовпчики: те саме вікно днів у кожному році; вибраний рік — іншим кольором
+        by = ew["by_year"]
+        colors = ["#d62728" if y == ew["as_of"].year else "#f4a582" for y in by.index]
+        fig = go.Figure(go.Bar(x=by.index, y=by.values, marker_color=colors,
+                               hovertemplate="%{x}: %{y:,.0f}<extra></extra>"))
+        fig.add_hline(y=ew["median"], line_dash="dot", annotation_text="норма (медіана)")
+        fig.add_hline(y=ew["p90"], line_dash="dash", line_color="#999", annotation_text="90% років нижче")
+        fig.update_layout(title=f"Ті самі {window} дн. ({ew['as_of'] - pd.Timedelta(days=window - 1):%d.%m}–"
+                                f"{ew['as_of']:%d.%m}) у кожному році",
+                          xaxis_title="Рік", yaxis_title="Активність", height=340, margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Норма рахується по вибраних слайдером роках, крім року самої дати. "
+                   "Прогноз — це те, як сезон зазвичай змінювався в ці тижні в минулі роки, а не прогноз погоди.")
 
 # =====================================================================
 # 2. КРИТИЧНІ ПЕРІОДИ — "типовий рік": як змінюється горіння по тижнях
@@ -195,8 +270,8 @@ with tab_anom:
         st.info("Аномалій не знайдено.")
     else:
         a = anom.copy()  # копія, щоб не зіпсувати закешовані дані
-        # Для кожної пари (рік, тиждень) рахуємо дату понеділка цього тижня — людям зрозуміліше за номер тижня
-        a["дата"] = [pd.Timestamp.fromisocalendar(int(y), int(w), 1).strftime("%d.%m.%Y") for y, w in zip(a.year, a.week)]
+        # Для кожної пари (рік, тиждень) рахуємо дату першого дня тижня — людям зрозуміліше за номер тижня
+        a["дата"] = [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(a.year, a.week)]
         # rename — українські назви колонок; [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
         st.dataframe(a.rename(columns={"year": "рік", "week": "тиждень", "value": "активність",
                                        "norm": "норма", "kind": "тип"})[["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
@@ -224,8 +299,10 @@ with tab_map:
         agg = cm.groupby(["lat", "lon"], as_index=False).size().rename(columns={"size": "днів горіння"})
         # density_map — "розмита" теплова карта на підкладці OpenStreetMap/Carto (потрібен інтернет)
         fig = px.density_map(agg, lat="lat", lon="lon", z="днів горіння", radius=12,
-                             center=dict(lat=(bbox[1] + bbox[3]) / 2, lon=(bbox[0] + bbox[2]) / 2),  # центр зони
-                             zoom=5 if region.startswith("Україна") else 6, map_style="carto-positron",
+                             center=dict(lat=(map_box[1] + map_box[3]) / 2, lon=(map_box[0] + map_box[2]) / 2),  # центр зони
+                             # чим ширша зона (у градусах довготи), тим дальше "відсуваємо" карту
+                             zoom=5 if map_box[2] - map_box[0] > 9 else 6 if map_box[2] - map_box[0] > 4 else 7,
+                             map_style="carto-positron",
                              color_continuous_scale="YlOrRd")
         fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0))
         st.plotly_chart(fig, width="stretch")
@@ -266,6 +343,10 @@ with tab_about:
    Для років лише з MODIS (до 2012) ряд = MODIS × k. Так виходить безперервний ряд з 2000 р.
 5. **Календар.** Рік × тиждень; **норма** = медіана по роках; **аномалія** = робастний z ≥ 2;
    **критичні періоди** = 25% тижнів із найбільшою середньою активністю.
+   Тижні рахуються від 1 січня (52 на рік, останні 1–2 дні — у 52-му), щоб усі роки мали однакову сітку.
+6. **Раннє попередження.** Активність за останні N днів порівнюємо з тими самими днями календаря
+   в інші роки: вище 75% років — 🟡 підвищений, вище 90% — 🟠 високий, робастний z ≥ 2 — 🔴 дуже високий.
+   Тенденція — як горіння зазвичай змінювалось у наступні 4 тижні в минулі роки.
 
 Джерело даних: NASA FIRMS (MODIS C6.1, VIIRS S-NPP 375 м).
 """)

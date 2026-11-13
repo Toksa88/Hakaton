@@ -24,6 +24,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from firecal import regions
+
 # Класи достовірності як числа: так можна сказати "не нижче за nominal" через звичайне >=
 CONF_ORDER = {"low": 0, "nominal": 1, "high": 2}
 
@@ -35,8 +37,15 @@ def filter_points(
     end=None,
     min_conf: str = "nominal",
     vegetation_only: bool = True,
+    oblasts: list[str] | None = None,
+    exclude_war: bool = False,
 ) -> pd.DataFrame:
-    """Відбір точок: зона інтересу, період, мінімальна достовірність, лише рослинні пожежі."""
+    """
+    Відбір точок: зона інтересу, період, мінімальна достовірність, лише рослинні пожежі.
+      oblasts     — лишити лише точки з цих областей (None = без фільтра за областями)
+      exclude_war — викинути точки з прифронтових областей після 24.02.2022 (regions.FRONTLINE):
+                    там багато хот-спотів від обстрілів, а не від с/г палів
+    """
     # "Маска" — стовпчик True/False того ж розміру, що й таблиця. Спочатку всі True (беремо все),
     # далі кожна умова через &= ("і") вимикає непотрібні рядки. Наприкінці df[m] лишає лише True.
     m = pd.Series(True, index=df.index)
@@ -51,6 +60,14 @@ def filter_points(
     m &= df["conf_class"].map(CONF_ORDER).fillna(1) >= CONF_ORDER[min_conf]
     if vegetation_only:
         m &= df["type"] == 0  # відкидаємо заводи, вулкани, офшорні факели
+    if oblasts is not None or exclude_war:
+        # Колонку "oblast" app.py додає один раз при завантаженні; якщо її нема — рахуємо тут
+        obl = df["oblast"] if "oblast" in df else pd.Series(regions.oblast_of(df["lat"], df["lon"]), index=df.index)
+        if oblasts is not None:
+            m &= obl.isin(oblasts)  # isin — "значення є в цьому списку"
+        if exclude_war:
+            # ~ — логічне "НЕ": викидаємо рядки, де ОДНОЧАСНО область прифронтова І дата після початку війни
+            m &= ~(obl.isin(regions.FRONTLINE) & (df["date"] >= regions.WAR_START))
     return df[m]
 
 
@@ -159,7 +176,8 @@ def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> 
     return act.rename("activity"), k
 
 
-def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nominal", cell_deg: float = 0.1):
+def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nominal", cell_deg: float = 0.1,
+                 oblasts: list[str] | None = None, exclude_war: bool = False):
     """
     Увесь конвеєр: точки -> відбір -> клітинки -> денні суми -> гармонізований ряд.
 
@@ -189,7 +207,7 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nomina
     full_end = pd.Timestamp(points["date"].max().year, 12, 31)
 
     # Фільтр БЕЗ start/end — беремо всі роки зони
-    p_all = filter_points(points, bbox=bbox, min_conf=min_conf)
+    p_all = filter_points(points, bbox=bbox, min_conf=min_conf, oblasts=oblasts, exclude_war=exclude_war)
     cells_all = to_fire_cell_days(p_all, cell_deg=cell_deg)
     daily_all = daily_counts(cells_all, start=full_start, end=full_end)
     activity_all, k = harmonized_series(daily_all, viirs_start)
