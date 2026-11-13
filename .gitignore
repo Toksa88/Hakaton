@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+data/cache/
+# сирі CSV з FIRMS великі — не комітимо, кожен качає сам (див. data/README.md)
+data/raw/*.csv
+data/raw/*.zip
+!data/raw/.gitkeep
+.streamlit/secrets.toml
