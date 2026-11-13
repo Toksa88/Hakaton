@@ -24,6 +24,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# Класи достовірності як числа: так можна сказати "не нижче за nominal" через звичайне >=
 CONF_ORDER = {"low": 0, "nominal": 1, "high": 2}
 
 
@@ -55,10 +56,13 @@ def filter_points(
 
 def to_fire_cell_days(df: pd.DataFrame, cell_deg: float = 0.1) -> pd.DataFrame:
     """Точки -> пожежо-клітинко-дні з прапорцями, які датчики їх бачили."""
+    # Після фільтрів точок може не лишитись — повертаємо порожню таблицю з потрібними колонками
     if df.empty:
         return pd.DataFrame(columns=["date", "cx", "cy", "lat", "lon", "modis", "viirs", "frp"])
     # assign додає нові колонки. cx, cy — номер клітинки сітки по довготі/широті.
     # floor(lon / 0.1) = "в якій смузі шириною 0.1° лежить точка": 30.37 -> 303, 30.39 -> 303 (та сама клітинка)
+    # floor (округлення ВНИЗ), а не round: так межі клітинок рівні — 30.30..30.39(9) завжди клітинка 303.
+    # is_modis / is_viirs — True/False для кожної точки: "чи це точка такого датчика"
     d = df.assign(
         cx=np.floor(df["lon"] / cell_deg).astype(int),
         cy=np.floor(df["lat"] / cell_deg).astype(int),
@@ -72,7 +76,8 @@ def to_fire_cell_days(df: pd.DataFrame, cell_deg: float = 0.1) -> pd.DataFrame:
         viirs=("is_viirs", "any"),
         frp=("frp", "sum"),
     )
-    # центр клітинки — для карти
+    # Тепер g — по одному рядку на (день, клітинка): колонки date, cx, cy, modis, viirs, frp.
+    # центр клітинки — для карти: клітинка 303 займає 30.3..30.4°, її центр = (303 + 0.5) * 0.1 = 30.35°
     g["lon"] = (g["cx"] + 0.5) * cell_deg
     g["lat"] = (g["cy"] + 0.5) * cell_deg
     return g
@@ -80,9 +85,14 @@ def to_fire_cell_days(df: pd.DataFrame, cell_deg: float = 0.1) -> pd.DataFrame:
 
 def daily_counts(cells: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     """Кількість пожежо-клітинок за кожну добу (включно з днями без пожеж = 0)."""
+    # Пожеж немає взагалі — таблиця з нулями на весь період, щоб графіки не падали.
+    # `start or "2020-01-01"` = беремо start, а якщо його не передали (None) — запасну дату.
     if cells.empty:
         idx = pd.date_range(start or "2020-01-01", end or "2020-12-31", freq="D")
         return pd.DataFrame(0, index=idx, columns=["modis", "viirs", "both", "union", "frp"])
+    # Додаємо дві допоміжні колонки до кожної клітинко-дня:
+    #   both  — True, якщо клітинку бачили ОБИДВА датчики (& = логічне "і" по рядках)
+    #   union — завжди True: кожен рядок і є подією "MODIS або VIIRS" (так його легко порахувати сумою)
     c = cells.assign(
         both=cells["modis"] & cells["viirs"],
         union=True,
@@ -92,6 +102,8 @@ def daily_counts(cells: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
         modis=("modis", "sum"), viirs=("viirs", "sum"),
         both=("both", "sum"), union=("union", "sum"), frp=("frp", "sum"),
     )
+    # Тепер daily — по рядку на кожен день, У ЯКОМУ БУЛИ пожежі; індекс (ліва "колонка") = дата.
+    # date_range будує повний список днів від start до end з кроком 1 день (freq="D").
     idx = pd.date_range(start or daily.index.min(), end or daily.index.max(), freq="D")
     # reindex додає дні, яких не було в даних (без пожеж), зі значенням 0 —
     # інакше календар мав би "дірки" і середні рахувались би неправильно
@@ -103,15 +115,26 @@ def calibration_factors(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -
     Коефіцієнт k[місяць] = union / modis у період перекриття (обидва датчики працюють).
     Повертає Series з індексом 1..12. Якщо даних мало — береться загальний k.
     """
+    # Приклад: у квітні 2012–2024 MODIS побачив 1000 клітинко-днів, а MODIS ∪ VIIRS — 2500.
+    # Отже k[4] = 2.5: у квітні MODIS "недобачає" в 2.5 раза. Квітень 2005 року (лише MODIS)
+    # множимо на 2.5 — і він стає порівнянним із квітнем 2020.
+    #
+    # Даних VIIRS немає зовсім — калібрувати нема з чим, k = 1 для всіх місяців (ряд = MODIS).
     if viirs_start is None:
         return pd.Series(1.0, index=range(1, 13))
     ov = daily[daily.index >= viirs_start]  # "overlap" — лише дні, коли вже працює VIIRS
+    # Групуємо дні перекриття за номером місяця (1..12) і сумуємо union та modis всередині місяця
     by_m = ov.groupby(ov.index.month)[["union", "modis"]].sum()
+    # k_all — один спільний коефіцієнт за весь період перекриття; запасний варіант для "бідних" місяців.
+    # Увага: якщо у вибраних роках немає жодного дня з VIIRS (напр. слайдер 2003–2010),
+    # ov порожній і k_all = 1 — тобто MODIS не підсилюється. Див. нотатки в AGENTS.md.
     k_all = ov["union"].sum() / ov["modis"].sum() if ov["modis"].sum() > 0 else 1.0
     # replace(0, nan) — щоб не ділити на нуль (результат буде nan, і далі ми його замінимо)
     k = (by_m["union"] / by_m["modis"].replace(0, np.nan))
     # місяці з дуже малою кількістю MODIS-подій дають шумний k -> замінюємо загальним
     k[by_m["modis"] < 20] = np.nan
+    # reindex(range(1, 13)) — гарантуємо всі 12 місяців (місяць без даних з'явиться як NaN);
+    # fillna(k_all) — усі NaN (немає даних / мало подій / ділення на нуль) замінюємо загальним k;
     # clip(lower=1): k не може бути < 1, бо union завжди містить усе, що бачив MODIS
     return k.reindex(range(1, 13)).fillna(k_all).clip(lower=1.0)
 
@@ -124,8 +147,11 @@ def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> 
     Повертає (ряд, коефіцієнти k).
     """
     k = calibration_factors(daily, viirs_start)
-    # Для кожного дня беремо k його місяця і множимо MODIS на нього — "оцінка" повної картини
+    # Для кожного дня беремо k його місяця і множимо MODIS на нього — "оцінка" повної картини.
+    # daily.index.month — номер місяця кожного дня; .map(k) — замінює номер на k цього місяця;
+    # .to_numpy() — робимо звичайний масив, щоб множення йшло "рядок до рядка" без вирівнювання індексів.
     est = daily["modis"] * daily.index.month.map(k).to_numpy()
+    # rename("activity") — просто дає ряду назву (вона з'явиться в підписах/таблицях)
     if viirs_start is None:
         return est.rename("activity"), k
     # where(умова, інакше): де умова True (день після старту VIIRS) — беремо union, інакше — оцінку est
