@@ -3,6 +3,8 @@
 Веб-додаток, що гармонізує хот-споти NASA FIRMS від датчиків MODIS і VIIRS у єдиний
 календар активності горіння для вибраної зони: сезонність, критичні періоди, аномалії, карта.
 
+> **Новачок у Python/git?** Почніть з [docs/NOVACHKAM.md](docs/NOVACHKAM.md) — там усе з нуля.
+
 ## Запуск
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
