@@ -43,6 +43,8 @@ C_VIIRS = "#8b5cf6"      # фіолетовий
 C_HARM = "#f97316"       # помаранчевий — "обидва супутники, узгоджено"
 C_NORM = "#9ca3af"       # сірий — "зазвичай"
 C_ACCENT = "#dc2626"     # червоний — "зараз", критичне
+# Кольори рівнів тривоги для «світлофора» на вкладці «Раннє попередження»
+LEVEL_COLORS = {"низький": "#16a34a", "підвищений": "#eab308", "високий": "#f97316", "дуже високий": "#dc2626"}
 
 
 # =====================================================================
@@ -301,7 +303,8 @@ with tab_cal:
         # hoverongaps=False — без підказки над порожніми клітинками (неповні тижні краю даних),
         # інакше там видно "Рік 2025, тиждень 50: " без числа
         hoverongaps=False,
-        hovertemplate="%{y}, " + hover_when + ": <b>%{z:,.0f}</b> осередків<extra></extra>",
+        # "осередків: N", а не "N осередків" — щоб не узгоджувати відмінок із числом (1 осередок, 3 осередки)
+        hovertemplate="%{y}, " + hover_when + " — осередків: <b>%{z:,.0f}</b><extra></extra>",
     ))
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
     fig.update_layout(
@@ -371,10 +374,36 @@ with tab_warn:
                 "(науково: робастний z ≥ 2, медіана/MAD). «Зазвичай» — медіана по роках.")
     first_day, last_day = activity.index.min().date(), activity.index.max().date()
     c1, c2 = st.columns([1, 2])
-    # date_input — календарик для вибору дати; за замовчуванням останній день у даних ("зараз")
-    as_of = c1.date_input("Дата", value=last_day, min_value=first_day, max_value=last_day, format="DD.MM.YYYY",
+
+    def set_example(zone: str, date: str) -> None:
+        """Кнопка-приклад: ставить зону, дату і (якщо треба) розсуває слайдер років.
+
+        Це callback (on_click): Streamlit викликає його ДО наступного проходу скрипта, тож нові значення
+        в st.session_state встигають потрапити у віджети (зону й роки — через їхні key).
+        """
+        st.session_state["zone"] = zone
+        st.session_state["ew_date"] = pd.Timestamp(date).date()
+        y = pd.Timestamp(date).year
+        saved = st.session_state.get("years")
+        if saved and not (saved[0] <= y <= saved[1]):  # рік прикладу поза слайдером — розсуваємо його
+            st.session_state["years"] = (min(saved[0], y), max(saved[1], y))
+
+    # Готові сценарії для демо: один клік — і видно 🔴, без пошуку дати в календарику.
+    # Обидва перевірені (див. AGENTS.md): Чорнобильська пожежа 2020 і весняні пали 2015.
+    polissia = next(z for z in regions.ZONES if z.startswith("Полісся"))
+    c1.caption("Приклади:")
+    b1, b2 = c1.columns(2)
+    b1.button("🔥 Чорнобиль, квітень 2020", on_click=set_example, args=(polissia, "2020-04-10"), width="stretch")
+    b2.button("🔥 Україна, березень 2015", on_click=set_example, args=("Україна (вся)", "2015-03-20"),
+              width="stretch")
+    # Дата: за замовчуванням останній день у даних ("зараз") або дата з кнопки-прикладу.
+    # Віджет без key: коли value змінюється (натиснули приклад), Streamlit показує нове значення.
+    # Дата поза межами даних (змінили зону чи роки) — повертаємось до останнього дня, інакше віджет упаде.
+    picked = st.session_state.get("ew_date")
+    default_day = picked if picked and first_day <= picked <= last_day else last_day
+    as_of = c1.date_input("Дата", value=default_day, min_value=first_day, max_value=last_day, format="DD.MM.YYYY",
                           help="За замовчуванням — останній день у даних. Можна вибрати будь-яку дату в минулому, "
-                               "щоб подивитись, що показала б система тоді (напр. 10.04.2020 — Чорнобильська зона).")
+                               "щоб подивитись, що показала б система тоді.")
     window = c1.select_slider("Вікно, днів", [3, 7, 14, 30], value=7,
                               help="За скільки останніх днів рахуємо осередки горіння")
     ew = analytics.early_warning(activity, as_of, window=window)
@@ -389,38 +418,48 @@ with tab_warn:
                 "немає інших років. Виберіть пізнішу дату або ширший діапазон років.")
     else:
         icon, meaning = analytics.LEVELS[ew["level"]]
-        c2.markdown(f"## {icon} Рівень: {ew['level']}")
-        c2.markdown(f"Останні {window} дн. до **{ew['as_of']:%d.%m.%Y}**: {meaning}.")
-        # Прогноз сезону: >1.2 — зазвичай наростає, <0.8 — спадає, між ними — без різких змін
+        # «Світлофор»: плашка кольору рівня. Свій HTML (unsafe_allow_html=True), бо в Streamlit немає
+        # помаранчевої плашки. Фон — той самий колір, але прозорий ("22" у кінці = ~13% непрозорості),
+        # а текст успадковує колір теми — тож плашку добре видно і в світлій, і в темній темі.
+        col = LEVEL_COLORS[ew["level"]]
+        c2.markdown(
+            f'<div style="border-left:6px solid {col};background:{col}22;padding:14px 18px;border-radius:8px">'
+            f'<div style="font-size:1.7rem;font-weight:700;line-height:1.2">{icon} {ew["level"].capitalize()}</div>'
+            f'<div style="margin-top:6px;font-size:1.05rem">{words.warning_sentence(ew, window)}</div>'
+            f'<div style="margin-top:2px;opacity:.75">Рівень означає: {meaning}.</div></div>',
+            unsafe_allow_html=True)
+        # Чого чекати далі: >1.2 — зазвичай наростає, <0.8 — спадає, між ними — без різких змін
         t = ew["trend"]
         if t is not None:
             if t >= 1.2:
-                c2.markdown(f"📈 За історією, у наступні 4 тижні горіння зазвичай **наростає** (~×{t:.1f}).")
+                c2.markdown(f"📈 Зазвичай у наступні 4 тижні горіння **наростає** (~{words.fmt_times(t)}).")
             elif t <= 0.8:
-                c2.markdown(f"📉 За історією, у наступні 4 тижні горіння зазвичай **спадає** (~×{t:.1f}).")
+                c2.markdown(f"📉 Зазвичай у наступні 4 тижні горіння **спадає** (~{words.fmt_times(t)}).")
             else:
-                c2.markdown("➡️ За історією, у наступні 4 тижні зазвичай без різких змін.")
+                c2.markdown("➡️ Зазвичай у наступні 4 тижні без різких змін.")
 
         m1, m2, m3 = st.columns(3)
-        m1.metric(f"Зараз (за {window} дн.)", f"{ew['current']:,.0f}")
-        # delta — маленька стрілка під числом: на скільки зараз вище/нижче норми
-        m2.metric("Норма для цих днів (медіана)", f"{ew['median']:,.0f}",
-                  delta=f"{ew['current'] - ew['median']:+,.0f} від норми", delta_color="inverse")
-        m3.metric("Зараз горить більше, ніж у", f"{ew['percentile']:.0f}% років")
+        m1.metric(f"Осередків за {window} дн.", words.fmt_num(ew["current"]))
+        # delta — маленька стрілка під числом: на скільки зараз більше/менше, ніж зазвичай
+        m2.metric("Зазвичай у ці дні", words.fmt_num(ew["median"]),
+                  delta=f"{ew['current'] - ew['median']:+,.0f} від звичайного".replace(",", words.NBSP),
+                  delta_color="inverse")
+        m3.metric("Горить більше, ніж у", f"{ew['percentile']:.0f}% інших років")
 
-        # Стовпчики: те саме вікно днів у кожному році; вибраний рік — іншим кольором
+        # Стовпчики: те саме вікно днів у кожному році; рік вибраної дати — акцентом, решта сірі
         by = ew["by_year"]
-        colors = ["#d62728" if y == ew["as_of"].year else "#f4a582" for y in by.index]
-        fig = go.Figure(go.Bar(x=by.index, y=by.values, marker_color=colors,
-                               hovertemplate="%{x}: %{y:,.0f}<extra></extra>"))
-        fig.add_hline(y=ew["median"], line_dash="dot", annotation_text="норма (медіана)")
-        fig.add_hline(y=ew["p90"], line_dash="dash", line_color="#999", annotation_text="90% років нижче")
+        colors = [C_ACCENT if y == ew["as_of"].year else C_NORM for y in by.index]
+        fig = go.Figure(go.Bar(x=[str(y) for y in by.index], y=by.values, marker_color=colors,
+                               hovertemplate="%{x} — осередків: <b>%{y:,.0f}</b><extra></extra>"))
+        fig.add_hline(y=ew["median"], line_dash="dot", annotation_text="зазвичай")
+        fig.add_hline(y=ew["p90"], line_dash="dash", line_color=C_NORM, annotation_text="у 9 з 10 років нижче")
         fig.update_layout(title=f"Ті самі {window} дн. ({ew['as_of'] - pd.Timedelta(days=window - 1):%d.%m}–"
-                                f"{ew['as_of']:%d.%m}) у кожному році",
-                          xaxis_title="Рік", yaxis_title="Осередків горіння", height=340, margin=dict(l=0, r=0, t=40, b=0))
+                                f"{ew['as_of']:%d.%m}) у кожному році — {ew['as_of'].year} червоним",
+                          xaxis_type="category", separators=", ",
+                          yaxis_title="Осередків горіння", height=340, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig, width="stretch")
-        st.caption("Норма рахується по вибраних слайдером роках, крім року самої дати. "
-                   "Прогноз — це те, як сезон зазвичай змінювався в ці тижні в минулі роки, а не прогноз погоди.")
+        st.caption("«Зазвичай» — по вибраних слайдером роках, крім року самої дати. "
+                   "«Чого чекати» — як сезон зазвичай змінювався в ці тижні в минулі роки, а не прогноз погоди.")
 
 # =====================================================================
 # 2. КРИТИЧНІ ПЕРІОДИ — "типовий рік": як змінюється горіння по тижнях
@@ -582,7 +621,7 @@ with tab_cmp:
             if col in df:
                 fig.add_trace(go.Scatter(x=x, y=df[col], name=name, mode="lines+markers",
                                          line=dict(color=color, width=width), marker=dict(size=5),
-                                         hovertemplate=f"{name}, %{{x}}: <b>%{{y:,.0f}}</b> {unit}<extra></extra>"))
+                                         hovertemplate=f"{name}, %{{x}} — {unit}: <b>%{{y:,.0f}}</b><extra></extra>"))
         if v_year is not None and str(v_year) in x:
             # Вертикальна пунктирна лінія у рік запуску VIIRS: yref="paper" — від низу до верху графіка.
             # Пастка: на осі-категорії рядок "2012" plotly читає як НОМЕР позиції 2012 (лінія відлітає
