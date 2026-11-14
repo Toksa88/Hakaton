@@ -156,6 +156,20 @@ def calibration_factors(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -
     return k.reindex(range(1, 13)).fillna(k_all).clip(lower=1.0)
 
 
+def overlap_ratio(modis: pd.Series, viirs: pd.Series, viirs_start: pd.Timestamp | None) -> float | None:
+    """У скільки разів VIIRS бачить більше, ніж MODIS, коли працюють обидва (з дня viirs_start).
+
+    modis, viirs — ряди з датою в індексі (точки чи клітинко-дні за день — що порівнюємо).
+    None — якщо VIIRS немає або MODIS за цей час нічого не бачив (ділити нема на що).
+    Для тексту-висновку: "VIIRS бачить у ~3 рази більше точок, тому без узгодження 2012 — стрибок".
+    """
+    if viirs_start is None:
+        return None
+    m = modis[modis.index >= viirs_start].sum()
+    v = viirs[viirs.index >= viirs_start].sum()
+    return float(v / m) if m > 0 else None
+
+
 def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> tuple[pd.Series, pd.Series]:
     """
     Єдиний ряд "активності горіння":

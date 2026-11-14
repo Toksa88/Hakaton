@@ -83,6 +83,33 @@ def calendar_matrix(activity: pd.Series, freq: str = "week") -> pd.DataFrame:
     return w.pivot_table(index="year", columns="week", values="value", aggfunc="sum").reindex(columns=range(1, 53))
 
 
+def yearly_totals(activity: pd.Series) -> pd.Series:
+    """Денний ряд -> сума за кожен рік (індекс = рік). groupby(рік).sum() — складаємо всі дні року."""
+    return activity.groupby(activity.index.year).sum()
+
+
+def hottest_year(activity: pd.Series) -> tuple[int, float] | None:
+    """Найгарячіший рік і у скільки разів він перевищив звичайний рік (медіану сум по роках).
+
+    None — якщо років менше двох (порівнювати нема з чим) або звичайний рік без пожеж.
+    """
+    y = yearly_totals(activity)
+    if len(y) < 2 or y.median() <= 0:
+        return None
+    # idxmax — рік (індекс) з найбільшою сумою
+    return int(y.idxmax()), float(y.max() / y.median())
+
+
+def month_ticks() -> tuple[list[int], list[str]]:
+    """Де на осі «тиждень року» починається кожен місяць: (номери тижнів, назви місяців).
+
+    Для підписів осі: людині зрозуміліше «Кві», ніж «тиждень 14». Рік 2021 — довільний невисокосний.
+    """
+    firsts = pd.DatetimeIndex([pd.Timestamp(2021, m, 1) for m in range(1, 13)])
+    return week_of_year(firsts).tolist(), ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер",
+                                           "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"]
+
+
 def climatology(activity: pd.Series) -> pd.DataFrame:
     """Для кожного тижня року: середнє, медіана, стандартне відхилення по всіх роках."""
     w = weekly(activity)
@@ -261,6 +288,9 @@ def critical_periods(activity: pd.Series, top_share: float = 0.25) -> pd.DataFra
         end = week_start(2021, p[-1]) + pd.Timedelta(days=6)
         # Один рядок майбутньої таблиці: словник "назва колонки -> значення"
         rows.append({
+            # Дати як Timestamp (рік 2021 умовний) — щоб малювати смуги на графіку й підписувати місяці
+            "початок": start,
+            "кінець": end,
             "тижні": f"{p[0]}–{p[-1]}" if len(p) > 1 else str(p[0]),
             "приблизно": f"{start:%d.%m} – {end:%d.%m}",
             "частка річного горіння, %": round(100 * clim.loc[p, "mean"].sum() / total, 1),
