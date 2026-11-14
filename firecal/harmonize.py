@@ -163,7 +163,8 @@ def overlap_ratio(modis: pd.Series, viirs: pd.Series, viirs_start: pd.Timestamp 
     None — якщо VIIRS немає або MODIS за цей час нічого не бачив (ділити нема на що).
     Для тексту-висновку: "VIIRS бачить у ~3 рази більше точок, тому без узгодження 2012 — стрибок".
     """
-    if viirs_start is None:
+    # Порожній ряд (у зоні немає точок) має індекс без дат — порівняння з датою впало б з TypeError
+    if viirs_start is None or modis.empty or viirs.empty:
         return None
     m = modis[modis.index >= viirs_start].sum()
     v = viirs[viirs.index >= viirs_start].sum()

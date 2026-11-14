@@ -88,6 +88,9 @@ def test_overlap_ratio():
     # рахуємо лише з дня старту VIIRS: 9 / 3 = 3
     assert harmonize.overlap_ratio(modis, viirs, pd.Timestamp("2012-01-01")) == 3.0
     assert harmonize.overlap_ratio(modis, viirs, None) is None
+    # Зона без жодної точки: порожні ряди без дат в індексі — не падаємо (знайдено AppTest-ом)
+    empty = pd.Series(dtype=float)
+    assert harmonize.overlap_ratio(empty, empty, pd.Timestamp("2012-01-01")) is None
 
 
 def test_scale_ticks_marks_ends():
@@ -95,3 +98,24 @@ def test_scale_ticks_marks_ends():
     assert vals[0] == 0 and vals[-1] == 4530
     assert texts[0] == "0 · мало" and texts[-1].endswith("+ · багато")
     assert vals == sorted(vals)
+
+
+def test_ratio_text_honest_for_zero_norm():
+    assert words.ratio_text(5, 0) == "зазвичай майже нуль"
+    assert words.ratio_text(68, 10) == "×6,8"
+
+
+def test_top_anomalies_sorts_by_difference_not_ratio():
+    # Зимовий тиждень: 5 замість 0 (величезний z), весняний: 3000 замість 500 — він має бути першим
+    anom = pd.DataFrame({"year": [2020, 2020, 2019], "week": [2, 14, 20], "value": [5.0, 3000.0, 10.0],
+                         "norm": [0.0, 500.0, 400.0], "z": [5.0, 3.0, -2.5],
+                         "kind": ["вище норми", "вище норми", "нижче норми"]})
+    top = analytics.top_anomalies(anom, 10)
+    assert list(top["week"]) == [14, 2]  # "нижче норми" не потрапляє в топ
+
+
+def test_critical_periods_empty_when_no_fires():
+    # Зона без жодної пожежі: не "весь рік критичний", а порожньо
+    act = pd.Series(0.0, index=pd.date_range("2018-01-01", "2020-12-31", freq="D"))
+    assert analytics.critical_periods(act).empty
+    assert words.seasons_label(analytics.critical_periods(act)) == "—"

@@ -471,17 +471,38 @@ with tab_crit:
                 "заливка — до 90-го перцентиля (у 9 з 10 років горіло менше). Критичні періоди — 25% тижнів "
                 "із найбільшою середньою кількістю осередків, сусідні тижні склеєні.")
     fig = go.Figure()
-    # Трюк для заливки діапазону: спочатку невидима лінія 90-го перцентиля,
-    # потім медіана з fill="tonexty" — заливається простір між ними.
+    # Дата початку кожного тижня — для підказки ("тиждень з 02.04"); 2021 — довільний невисокосний рік
+    wk_dates = [analytics.week_start(2021, w).strftime("%d.%m") for w in clim.index]
+    # Трюк для заливки діапазону: спочатку невидима лінія "у 9 з 10 років нижче" (90-й перцентиль),
+    # потім "зазвичай" (медіана) з fill="tonexty" — заливається простір між ними.
     fig.add_trace(go.Scatter(x=clim.index, y=clim["p90"], line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=clim.index, y=clim["median"], fill="tonexty", name="Медіана (діапазон до 90-го перцентиля)",
-                             line=dict(color="#e4572e")))
-    fig.add_trace(go.Scatter(x=clim.index, y=clim["mean"], name="Середнє", line=dict(color="#333", dash="dot")))
-    fig.update_layout(xaxis_title="Тиждень року", yaxis_title="Осередків за тиждень", height=380,
-                      margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation="h"))
+    fig.add_trace(go.Scatter(x=clim.index, y=clim["median"], fill="tonexty", fillcolor=C_HARM + "33",
+                             name="Зазвичай (заливка — до «у 9 з 10 років нижче»)", line=dict(color=C_HARM, width=3),
+                             customdata=list(zip(wk_dates, clim["p90"])),
+                             hovertemplate="Тиждень з %{customdata[0]}<br>зазвичай: <b>%{y:,.0f}</b><br>"
+                                           "у 9 з 10 років нижче: %{customdata[1]:,.0f}<extra></extra>"))
+    # Критичні періоди — напівпрозорі червоні смуги прямо на графіку з підписом "дати · % річного горіння".
+    # add_vrect — прямокутник на всю висоту між x0 і x1; ±0.5 — щоб смуга покривала тижні цілком.
+    for _, row in crit.iterrows():
+        w0 = int(analytics.week_of_year(pd.DatetimeIndex([row["початок"]]))[0])
+        w1 = int(analytics.week_of_year(pd.DatetimeIndex([row["кінець"]]))[0])
+        fig.add_vrect(x0=w0 - 0.5, x1=w1 + 0.5, fillcolor=C_ACCENT, opacity=0.12, line_width=0,
+                      annotation_text=f"{row['початок']:%d.%m}–{row['кінець']:%d.%m}<br>"
+                                      f"<b>{words.fmt_num(row['частка річного горіння, %'], 0)}%</b> горіння",
+                      annotation_position="top left", annotation_font_size=11)
+    mt_weeks, mt_names = analytics.month_ticks()
+    fig.update_layout(title="Звичайний рік: осередків горіння за тиждень", yaxis_title=None, height=420,
+                      separators=", ", margin=dict(l=0, r=0, t=70, b=0), legend=dict(orientation="h", y=-0.12),
+                      xaxis=dict(tickvals=mt_weeks, ticktext=mt_names, range=[0.5, 52.5]))
     st.plotly_chart(fig, width="stretch")
-    st.subheader("Критичні періоди (найактивніші 25% тижнів року)")
-    st.dataframe(crit, hide_index=True, width="stretch")  # таблиця з сортуванням по кліку
+    # Таблиця — для тих, кому потрібні точні цифри; на екрані її заміняють смуги на графіку
+    with st.expander("Таблиця критичних періодів"):
+        crit_ui = pd.DataFrame({
+            "Період": [f"{s:%d.%m} – {e:%d.%m}" for s, e in zip(crit["початок"], crit["кінець"])],
+            "Частка річного горіння, %": crit["частка річного горіння, %"],
+            "Найгарячіше (тиждень з)": [analytics.week_start(2021, w).strftime("%d.%m") for w in crit["пік (тиждень)"]],
+        }) if not crit.empty else crit
+        st.dataframe(crit_ui, hide_index=True, width="stretch")
 
 # =====================================================================
 # 3. АНОМАЛІЇ — конкретні тижні конкретних років, що вибиваються з норми
@@ -492,8 +513,8 @@ with tab_anom:
                 "Тиждень незвичний, якщо осередків горіння в ньому набагато більше (або менше), ніж зазвичай "
                 "у цей тиждень року. Науково: відхилення від медіани цього тижня більше ніж 2 робастні "
                 "стандартні відхилення (медіана/MAD, |z| > 2).")
-    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
-    yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
+    # Стовпчики "осередки за кожен рік" + пунктир медіани: видно аномальні роки цілком.
+    # yearly — суми за роками, пораховані вище для шапки (analytics.yearly_totals)
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Осередків за рік"),
                  color=yearly.values, color_continuous_scale="YlOrRd",
                  title=f"Осередків горіння за рік, {years_label}")
@@ -504,20 +525,35 @@ with tab_anom:
     # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
     fig.update_traces(hovertemplate="Рік: %{x}<br>Осередків за рік: %{y:,.0f}<extra></extra>")
     st.plotly_chart(fig, width="stretch")
-    # Потім таблиця конкретних аномальних тижнів і кнопки завантаження
+    # Потім топ-10 найнезвичніших тижнів, повна таблиця в розгортному блоці і кнопки завантаження
     if anom.empty:
-        st.info("Аномалій не знайдено.")
+        st.info("Незвичних тижнів не знайдено.")
     else:
+        # --- Топ-10 гарячих тижнів (сортування за різницею в осередках — див. analytics.top_anomalies)
+        top = analytics.top_anomalies(anom, 10)
+        st.subheader(f"Топ-{len(top)} незвично гарячих тижнів")
+        st.dataframe(pd.DataFrame({
+            "Тиждень з": [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(top.year, top.week)],
+            "Осередків": top["value"].round().astype(int),
+            "Зазвичай": top["norm"].round().astype(int),
+            "У скільки разів більше": [words.ratio_text(v, n) for v, n in zip(top["value"], top["norm"])],
+        }), hide_index=True, width="stretch")
+
         a = anom.copy()  # копія, щоб не зіпсувати закешовані дані
         # Для кожної пари (рік, тиждень) рахуємо дату першого дня тижня — людям зрозуміліше за номер тижня
         a["дата"] = [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(a.year, a.week)]
-        # Одна таблиця і для показу, і для завантаження. rename — українські назви колонок;
-        # [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
+        # Таблиця для CSV — з НЕЗМІННИМИ назвами колонок: її читають скрипти команди (див. AGENTS.md).
+        # rename — українські назви колонок; [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
         table = (a.rename(columns={"year": "рік", "week": "тиждень", "value": "активність",
                                    "norm": "норма", "kind": "тип"})
                  [["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
                  .round(1))
-        st.dataframe(table, hide_index=True, width="stretch")
+        # Та сама таблиця для екрана й Excel — словами з екрана, плюс «у скільки разів» (z лишаємо для науковців)
+        table_ui = table.rename(columns={"дата": "тиждень з", "активність": "осередків", "норма": "зазвичай",
+                                         "тип": "вище чи нижче норми"})
+        table_ui.insert(5, "у скільки разів", [words.ratio_text(v, n) for v, n in zip(a["value"], a["norm"])])
+        with st.expander(f"Усі незвичні тижні ({len(table)}), зокрема нижче норми"):
+            st.dataframe(table_ui, hide_index=True, width="stretch")
         # Дві кнопки в один рядок: st.columns ділить ширину навпіл
         b1, b2 = st.columns(2)
         b1.download_button(
@@ -551,9 +587,16 @@ with tab_map:
                 "Для кожної ділянки ~10 км рахуємо, скільки днів за вибрані роки й місяці там був вогонь. "
                 "Тихі місця прозорі, щоб було видно лише гарячі; найяскравіший колір — 99-й перцентиль і вище. "
                 "При сильному наближенні картинка стає різкою — видно окремі ділянки.")
-    # Вибір місяців: format_func показує "Січ" замість 1
-    months = st.multiselect("Місяці", list(range(1, 13)), default=list(range(1, 13)),
-                            format_func=lambda m: MONTHS[m - 1])
+    # Сезони замість 12 чипів-місяців: одним кліком «де горить навесні», «де влітку».
+    # Словник "назва кнопки -> список місяців"; None — "свої місяці", тоді показуємо звичайний вибір.
+    SEASONS = {"Увесь рік": list(range(1, 13)), "Весна (бер–тра)": [3, 4, 5], "Літо (чер–сер)": [6, 7, 8],
+               "Осінь (вер–лис)": [9, 10, 11], "Свої місяці…": None}
+    season = st.radio("Сезон", list(SEASONS), horizontal=True, label_visibility="collapsed")
+    months = SEASONS[season]
+    if months is None:
+        # format_func показує "Січ" замість 1
+        months = st.multiselect("Місяці", list(range(1, 13)), default=[12, 1, 2],
+                                format_func=lambda m: MONTHS[m - 1])
     # Скільки днів горіла кожна клітинка у вибрані місяці (деталі — у firecal/mapgrid.py).
     # Порожньо, якщо в зоні немає пожеж АБО не вибрано жодного місяця — тоді карту не малюємо
     # (раніше без місяців карта падала з ValueError). НЕ st.stop(): він обірвав би й наступні вкладки.
@@ -589,7 +632,8 @@ with tab_map:
         # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
         fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
                           # Без "(згладжено)": з зуму ZOOM_SWITCH видно різку картинку, а шкала в обох та сама (спільний cap)
-                          coloraxis_colorbar_title_text="днів горіння",
+                          # з роками: інакше число «219 днів» висить у повітрі — за який період?
+                          coloraxis_colorbar_title_text=f"днів горіння<br>за {years_label}",
                           map_layers=[
                               # Згладжена: видима до зуму ZOOM_SWITCH (maxzoom: на ньому й вище шар ховається)
                               dict(sourcetype="image", source=smooth["source"],

@@ -149,6 +149,18 @@ def anomalies(activity: pd.Series, z_thresh: float = 2.0) -> pd.DataFrame:
     return w[w["kind"] != ""].sort_values("z", ascending=False)
 
 
+def top_anomalies(anom: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+    """Найнезвичніші ГАРЯЧІ тижні: лише «вище норми», сортуємо за різницею в осередках (value - norm).
+
+    Чому не за z чи кратністю: взимку норма майже нуль, і 5 осередків замість 0 дають величезний z
+    чи «×40» — такі тижні вилазили б нагору, хоч це дрібниця. Різниця в осередках показує
+    справді великі події (напр. Чорнобиль 2020).
+    """
+    hot = anom[anom["kind"] == "вище норми"]
+    # assign — нова колонка diff; nlargest(n, "diff") — n рядків із найбільшою різницею
+    return hot.assign(diff=hot["value"] - hot["norm"]).nlargest(n, "diff")
+
+
 def _same_day(ts: pd.Timestamp, year: int) -> pd.Timestamp:
     """Та сама дата (день і місяць) в іншому році. 29 лютого в невисокосний рік -> 28 лютого."""
     try:
@@ -264,6 +276,11 @@ def critical_periods(activity: pd.Series, top_share: float = 0.25) -> pd.DataFra
     Сусідні критичні тижні склеюємо у періоди ("тижні 12–17").
     """
     clim = climatology(activity)
+    # Пожеж немає взагалі — критичних періодів теж немає. Без цієї перевірки всі тижні рівні нулю,
+    # кожен "проходить" поріг, і весь рік ставав одним критичним періодом "січ–гру".
+    if clim.empty or clim["mean"].sum() <= 0:
+        return pd.DataFrame(columns=["початок", "кінець", "тижні", "приблизно",
+                                     "частка річного горіння, %", "пік (тиждень)"])
     thr = clim["mean"].quantile(1 - top_share)  # поріг: 75-й перцентиль середньої активності
     # clim.index — номери тижнів; лишаємо ті, де середня активність не нижча за поріг
     crit = clim.index[clim["mean"] >= thr].tolist()

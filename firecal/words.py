@@ -124,6 +124,13 @@ def times_words(r: float) -> str:
     return f"{fmt_num(n)} {word}"
 
 
+def ratio_text(value: float, usual: float) -> str:
+    """Колонка «у скільки разів більше» для таблиць: "×6,8" або чесне "зазвичай майже нуль"."""
+    if usual < 1:
+        return "зазвичай майже нуль"
+    return fmt_times(value / usual)
+
+
 def warning_sentence(ew: dict, window: int) -> str:
     """Одне речення для «світлофора» раннього попередження.
 
