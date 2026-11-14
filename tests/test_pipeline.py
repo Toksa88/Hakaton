@@ -205,3 +205,14 @@ def test_combine_drops_duplicate_points():
     m = load.normalize(_modis([(50, 30, 320, "2020-04-01", 1000, 60, 5, 0), (50, 31, 320, "2020-04-01", 1000, 60, 5, 0)]))
     both = load.combine([m, m])
     assert len(both) == 2 and both.index.tolist() == [0, 1]
+
+
+def test_excel_csv_semicolon_decimal_comma_bom():
+    # Excel з українськими налаштуваннями чекає ";" між колонками і кому в дробах,
+    # а BOM на початку — щоб кирилиця не стала «кракозябрами».
+    from firecal import export
+    df = pd.DataFrame({"рік": [2020], "активність": [12.5]})
+    raw = export.to_excel_csv(df)
+    assert raw.startswith(b"\xef\xbb\xbf")             # BOM utf-8-sig
+    text = raw.decode("utf-8-sig")
+    assert text.splitlines() == ["рік;активність", "2020;12,5"]

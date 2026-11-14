@@ -27,7 +27,7 @@ import plotly.graph_objects as go   # "ручні" графіки, коли тр
 import streamlit as st              # веб-інтерфейс
 
 # Наш власний код із папки firecal/ (див. опис структури вище)
-from firecal import analytics, harmonize, load, regions
+from firecal import analytics, export, harmonize, load, regions
 
 # Налаштування сторінки: назва вкладки браузера, іконка, широкий макет. Має бути ПЕРШИМ st-викликом.
 st.set_page_config(page_title="Календар горіння", page_icon="🔥", layout="wide")
@@ -189,11 +189,17 @@ with tab_cal:
     fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
     c1.plotly_chart(fig, width="stretch")
     # Кнопка завантаження: віддаємо ту саму таблицю (рік × тиждень/місяць), що намальована як теплова карта.
-    # rename_axis("рік") підписує стовпець з роками; utf-8-sig потрібен, щоб Excel правильно показав кирилицю.
+    # rename_axis("рік") підписує стовпець з роками. У місячному режимі стовпці — числа 1..12,
+    # тож міняємо їх на назви місяців (як на графіку). export.to_excel_csv — CSV, що відкривається в Excel.
+    mat_out = mat.rename_axis("рік").round(1)
+    if freq == "Місяць":
+        mat_out.columns = MONTHS
+    # Код ряду в назві файлу: скачавши гармонізований, MODIS і VIIRS, їх легко розрізнити
+    series_code = {"Гармонізований": "harmonized", "Лише MODIS": "modis", "Лише VIIRS": "viirs"}[series_name]
     c2.download_button(
         "⬇️ Скачати CSV",
-        data=mat.rename_axis("рік").round(1).to_csv().encode("utf-8-sig"),
-        file_name=f"calendar_{'month' if freq == 'Місяць' else 'week'}.csv",
+        data=export.to_excel_csv(mat_out, index=True),  # index=True: роки — це індекс, їх лишаємо
+        file_name=f"calendar_{'month' if freq == 'Місяць' else 'week'}_{series_code}.csv",
         mime="text/csv",
         key="dl_calendar",  # унікальний ключ, щоб не конфліктувало з кнопкою на іншій вкладці
     )
@@ -287,8 +293,8 @@ with tab_anom:
         a = anom.copy()  # копія, щоб не зіпсувати закешовані дані
         # Для кожної пари (рік, тиждень) рахуємо дату першого дня тижня — людям зрозуміліше за номер тижня
         a["дата"] = [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(a.year, a.week)]
-        # rename — українські назви колонок; [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
-        # Готуємо таблицю з українськими назвами колонок: і для показу, і для завантаження
+        # Одна таблиця і для показу, і для завантаження. rename — українські назви колонок;
+        # [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
         table = (a.rename(columns={"year": "рік", "week": "тиждень", "value": "активність",
                                    "norm": "норма", "kind": "тип"})
                  [["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
@@ -296,17 +302,19 @@ with tab_anom:
         st.dataframe(table, hide_index=True, width="stretch")
         st.download_button(
             "⬇️ Скачати CSV",
-            data=table.to_csv(index=False).encode("utf-8-sig"),  # index=False: без зайвого стовпця з номерами рядків
+            data=export.to_excel_csv(table),  # без зайвого стовпця з номерами рядків (index=False)
             file_name="anomalies.csv",
             mime="text/csv",
             key="dl_anomalies",
         )
-     # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
+    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
     yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
                  color=yearly.values, color_continuous_scale="YlOrRd")
     fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
-    fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False)
+    # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
+    fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False,
+                      separators=", ")
     # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
     fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
     st.plotly_chart(fig, width="stretch")
