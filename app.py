@@ -151,6 +151,9 @@ cell_deg = st.sidebar.select_slider("Розмір клітинки сітки, �
 if any(n.startswith("SAMPLE") for n in [f.name for f in load.RAW_DIR.glob("*.csv")]) and not from_upload:
     st.sidebar.error("⚠️ Зараз показано СИНТЕТИЧНІ тестові дані. Замініть їх справжніми з FIRMS.")
 
+# Роки для підписів: "2020", а не "2020–2020", якщо рік один
+years_label = str(years[0]) if years[0] == years[1] else f"{years[0]}–{years[1]}"
+
 # Перетворюємо вибрані роки в дати: з 1 січня першого року до 31 грудня останнього
 start, end = pd.Timestamp(years[0], 1, 1), pd.Timestamp(years[1], 12, 31)
 # Запускаємо обробку (з кешу, якщо параметри не змінились)
@@ -162,6 +165,10 @@ pts, cells, daily, activity, k, viirs_start = run_pipeline(
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
 # =====================================================================
 st.title(f"Календар активності горіння — {region}")
+# Один рядок-підсумок: що саме показано. Видно на всіх вкладках, не відкриваючи бічне меню.
+st.caption(f"📍 Зона: **{region}** · 📆 Роки: **{years_label}** · "
+           f"🔥 Достовірність: від **{min_conf}** · клітинка **{cell_deg}°**"
+           + (" · без прифронтових областей з 24.02.2022" if exclude_war else ""))
 clim = analytics.climatology(activity)        # "норма" для кожного тижня року
 anom = analytics.anomalies(activity)          # тижні, що сильно відхиляються від норми
 crit = analytics.critical_periods(activity)   # найактивніші періоди року
@@ -207,14 +214,30 @@ with tab_cal:
     series = {"Гармонізований": activity, "Лише MODIS": daily["modis"], "Лише VIIRS": daily["viirs"]}[series_name]
     # Таблиця: рядки = роки, стовпці = тижні (або місяці), значення = активність
     mat = analytics.calendar_matrix(series, "month" if freq == "Місяць" else "week")
-    # px.imshow малює таблицю як картинку: кожна клітинка = колір за значенням
-    fig = px.imshow(
-        mat, aspect="auto", color_continuous_scale="YlOrRd", origin="lower",  # origin="lower" — старі роки знизу
-        labels=dict(x="Місяць" if freq == "Місяць" else "Тиждень року", y="Рік", color="Активність"),
-        x=MONTHS if freq == "Місяць" else list(mat.columns), y=[str(y) for y in mat.index],
-    )
-    # Висота залежить від кількості років, щоб рядки не були занадто тонкими
-    fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
+    # Верхня межа кольору = 97-й перцентиль: одна дуже аномальна клітинка (напр. 2022) не "вбиває"
+    # контраст решти. quantile сам пропускає порожні клітинки (NaN).
+    zmax = float(pd.Series(mat.values.ravel()).quantile(0.97))
+    if not zmax > 0:  # захист: порожня таблиця дає NaN, а нульова активність не дає шкали
+        zmax = 1.0
+    # go.Heatmap замість px.imshow, бо тільки він вміє xgap/ygap: проміжки між клітинками в пікселях
+    fig = go.Figure(go.Heatmap(
+        z=mat.values,
+        x=MONTHS if freq == "Місяць" else list(mat.columns),
+        y=[str(y) for y in mat.index],  # перший рік знизу, як і було з origin="lower"
+        colorscale="YlOrRd", zmin=0, zmax=zmax,
+        xgap=2, ygap=2,  # 2 пікселі між клітинками
+        colorbar=dict(title="Активність"),
+        # hoverongaps=False — без підказки над порожніми клітинками (неповні тижні краю даних),
+        # інакше там видно "Рік 2025, тиждень 50: " без числа
+        hoverongaps=False,
+        hovertemplate="Рік %{y}, " + ("%{x}" if freq == "Місяць" else "тиждень %{x}") + ": %{z:,.0f}<extra></extra>",
+    ))
+    # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
+    fig.update_layout(
+        title=f"Активність горіння по {'місяцях' if freq == 'Місяць' else 'тижнях'}, {years_label}",
+        xaxis_title="Місяць" if freq == "Місяць" else "Тиждень року", yaxis_title="Рік",
+        separators=", ",  # як в Україні: 12 345,6 (так само зроблено на графіку аномалій)
+        height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=50, b=0))
     # type="category" — роки як підписи, а не числа: інакше при одному-двох роках plotly малює
     # на осі "2 019,6" і "2 020,4" (таке саме на інших графіках по роках нижче)
     fig.update_yaxes(type="category")
@@ -254,7 +277,7 @@ with tab_cal:
         key="dl_calendar",
     )
     c2.caption("Кожна клітинка = скільки ділянок сітки горіло за цей період. "
-               "Темніше = більше горіння.")
+               "Темніше = більше горіння. Найтемніший колір означає значення від 97-го перцентиля й вище.")
 
 # =====================================================================
 # РАННЄ ПОПЕРЕДЖЕННЯ — "наскільки зараз горить більше, ніж зазвичай у цю пору року?"
@@ -337,6 +360,19 @@ with tab_crit:
 with tab_anom:
     st.caption("Тиждень вважається аномальним, якщо відхилення від багаторічної норми цього тижня "
                "більше ніж 2 робастні стандартні відхилення (медіана/MAD).")
+    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
+    yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
+    fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
+                 color=yearly.values, color_continuous_scale="YlOrRd",
+                 title=f"Активність за рік, {years_label}")
+    fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
+    # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
+    fig.update_layout(height=320, margin=dict(l=0, r=0, t=50, b=0), coloraxis_showscale=False,
+                      separators=", ", xaxis_type="category")  # роки як підписи (див. календар)
+    # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
+    fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
+    st.plotly_chart(fig, width="stretch")
+    # Потім таблиця конкретних аномальних тижнів і кнопки завантаження
     if anom.empty:
         st.info("Аномалій не знайдено.")
     else:
@@ -373,17 +409,6 @@ with tab_anom:
             mime="text/csv",
             key="dl_anomalies",
         )
-    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
-    yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
-    fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
-                 color=yearly.values, color_continuous_scale="YlOrRd")
-    fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
-    # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
-    fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False,
-                      separators=", ", xaxis_type="category")  # роки як підписи (див. календар)
-    # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
-    fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
-    st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
 # 4. КАРТА — де горить найчастіше (теплова карта щільності)
@@ -402,6 +427,10 @@ with tab_map:
         # Плавна картинка «де горить найчастіше», розмита в градусах, а не в пікселях (див. mapgrid.py).
         # НЕ density_map: та додає плями, що накладаються, і при віддаленні заливає червоним усю країну.
         smooth = mapgrid.smooth_image(agg, cell_deg)
+        # Друга, різкіша картинка для великого наближення: розмиття мале, тож клітинки видно як клітинки,
+        # а не як пляму розміром з місто. cap беремо від першої, щоб кольори збігались.
+        sharp = mapgrid.smooth_image(agg, cell_deg, upsample=6, sigma_cells=0.35, cap=smooth["cap"])
+        ZOOM_SWITCH = 8  # з цього зуму показуємо різку картинку (7.5-9: підбери на око)
         # choropleth_map — квадрати клітинок. Їх робимо НЕВИДИМИМИ (marker_opacity=0 нижче): вони потрібні
         # лише для підказки при наведенні (точне число клітинки) і для шкали кольорів праворуч.
         fig = px.choropleth_map(
@@ -422,9 +451,15 @@ with tab_map:
         # map.layers — додаткові шари карти: наша картинка, натягнута на свої 4 кути.
         # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
         fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
-                          coloraxis_colorbar_title_text="днів горіння<br>(згладжено)",
-                          map_layers=[dict(sourcetype="image", source=smooth["source"],
-                                           coordinates=smooth["coordinates"], below="traces")])
+                          # Без "(згладжено)": з зуму ZOOM_SWITCH видно різку картинку, а шкала в обох та сама (спільний cap)
+                          coloraxis_colorbar_title_text="днів горіння",
+                          map_layers=[
+                              # Згладжена: видима до зуму ZOOM_SWITCH (maxzoom: на ньому й вище шар ховається)
+                              dict(sourcetype="image", source=smooth["source"],
+                                   coordinates=smooth["coordinates"], below="traces", maxzoom=ZOOM_SWITCH),
+                              # Різка: видима від зуму ZOOM_SWITCH (minzoom: нижче шар схований)
+                              dict(sourcetype="image", source=sharp["source"],
+                                   coordinates=sharp["coordinates"], below="traces", minzoom=ZOOM_SWITCH)])
         st.plotly_chart(fig, width="stretch")
 
 # =====================================================================

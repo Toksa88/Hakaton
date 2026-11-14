@@ -345,3 +345,11 @@ def test_upload_minimal_firms_csv_without_optional_columns():
     csv = b"latitude,longitude,brightness,acq_date,confidence\n50.1,30.1,320,2020-04-01,85\n"
     df = load.read_upload("min.csv", csv)
     assert len(df) == 1 and df["time"].iloc[0] == 0 and df["type"].iloc[0] == 0
+
+
+def test_smooth_image_uses_given_cap():
+    # Згладжена й різка картинки мають ділити одну шкалу кольорів, тож cap можна задати ззовні
+    from firecal import mapgrid
+    agg = pd.DataFrame({"lat": [50.05], "lon": [30.05], "днів горіння": [10]})
+    out = mapgrid.smooth_image(agg, 0.1, cap=123.0)
+    assert out["cap"] == 123.0
