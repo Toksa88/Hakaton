@@ -133,6 +133,7 @@ streamlit run app.py
 2. `.venv\Scripts\activate` — заходимо в пісочницю. На початку рядка з'явиться `(.venv)`.
    Робити **щоразу**, коли відкриваєте новий термінал.
 3. `pip install -r requirements.txt` — встановлює бібліотеки (один раз, кілька хвилин).
+   Якщо після `git pull` змінився `requirements.txt` (додали бібліотеку) — виконати ще раз.
 4. `python scripts/make_sample_data.py` — створює тестові дані (один раз).
 5. `streamlit run app.py` — запускає сайт; відкриється браузер. Зупинити — `Ctrl+C` у терміналі.
 
@@ -143,13 +144,14 @@ streamlit run app.py
 pytest -q
 python scripts/smoke_app.py
 ```
-Має бути `5 passed` (або більше, якщо додали тести) і `OK, вкладок: 6`.
+Має бути `... passed` без `failed` і `OK, вкладок: 7`.
 
 ### Якщо щось не працює
 | Помилка | Що робити |
 |---|---|
 | `...activate cannot be loaded because running scripts is disabled` | Один раз виконати `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, відповісти `Y` |
 | `No module named streamlit` (або pandas, pytest) | Ви не в пісочниці: виконайте `.venv\Scripts\activate` |
+| `No module named openpyxl` (а streamlit є) | Бібліотеку додали пізніше: `pip install -r requirements.txt` ще раз |
 | `'python' is not recognized` | Python не встановлено або не стоїть галочка «Add to PATH» — перевстановити |
 | На сайті «Немає даних» | Запустіть `python scripts/make_sample_data.py` або покладіть CSV у `data/raw/` |
 | Карта порожня | Карті потрібен інтернет для підкладки |
