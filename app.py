@@ -207,14 +207,27 @@ with tab_cal:
     series = {"Гармонізований": activity, "Лише MODIS": daily["modis"], "Лише VIIRS": daily["viirs"]}[series_name]
     # Таблиця: рядки = роки, стовпці = тижні (або місяці), значення = активність
     mat = analytics.calendar_matrix(series, "month" if freq == "Місяць" else "week")
-    # px.imshow малює таблицю як картинку: кожна клітинка = колір за значенням
-    fig = px.imshow(
-        mat, aspect="auto", color_continuous_scale="YlOrRd", origin="lower",  # origin="lower" — старі роки знизу
-        labels=dict(x="Місяць" if freq == "Місяць" else "Тиждень року", y="Рік", color="Активність"),
-        x=MONTHS if freq == "Місяць" else list(mat.columns), y=[str(y) for y in mat.index],
-    )
-    # Висота залежить від кількості років, щоб рядки не були занадто тонкими
-    fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
+    # Верхня межа кольору = 97-й перцентиль: одна дуже аномальна клітинка (напр. 2022) не "вбиває"
+    # контраст решти. quantile сам пропускає порожні клітинки (NaN).
+    zmax = float(pd.Series(mat.values.ravel()).quantile(0.97))
+    if not zmax > 0:  # захист: порожня таблиця дає NaN, а нульова активність не дає шкали
+        zmax = 1.0
+    # go.Heatmap замість px.imshow, бо тільки він вміє xgap/ygap: проміжки між клітинками в пікселях
+    fig = go.Figure(go.Heatmap(
+        z=mat.values,
+        x=MONTHS if freq == "Місяць" else list(mat.columns),
+        y=[str(y) for y in mat.index],  # перший рік знизу, як і було з origin="lower"
+        colorscale="YlOrRd", zmin=0, zmax=zmax,
+        xgap=2, ygap=2,  # 2 пікселі між клітинками
+        colorbar=dict(title="Активність"),
+        hovertemplate="Рік %{y}, " + ("%{x}" if freq == "Місяць" else "тиждень %{x}") + ": %{z:,.0f}<extra></extra>",
+    ))
+    # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
+    fig.update_layout(
+        title=f"Активність горіння по {'місяцях' if freq == 'Місяць' else 'тижнях'}, {years[0]}–{years[1]}",
+        xaxis_title="Місяць" if freq == "Місяць" else "Тиждень року", yaxis_title="Рік",
+        separators=", ",  # як в Україні: 12 345,6 (так само зроблено на графіку аномалій)
+        height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=50, b=0))
     # type="category" — роки як підписи, а не числа: інакше при одному-двох роках plotly малює
     # на осі "2 019,6" і "2 020,4" (таке саме на інших графіках по роках нижче)
     fig.update_yaxes(type="category")
@@ -254,7 +267,7 @@ with tab_cal:
         key="dl_calendar",
     )
     c2.caption("Кожна клітинка = скільки ділянок сітки горіло за цей період. "
-               "Темніше = більше горіння.")
+               "Темніше = більше горіння. Найтемніший колір означає значення від 97-го перцентиля й вище.")
 
 # =====================================================================
 # РАННЄ ПОПЕРЕДЖЕННЯ — "наскільки зараз горить більше, ніж зазвичай у цю пору року?"
