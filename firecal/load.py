@@ -101,6 +101,8 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Запис "A if умова else B" — це короткий if/else в один рядок.
     conf = modis_conf_class(df["confidence"]) if sensor == "MODIS" else viirs_conf_class(df["confidence"])
 
+    zero = pd.Series(0, index=df.index)  # стовпчик нулів — запасне значення для відсутніх числових колонок
+
     # Будуємо нову таблицю зі словника "назва колонки -> значення".
     # df.get("колонка", запасне) — як df["колонка"], але якщо колонки немає, повертає запасне значення
     # (тут — стовпчик із заповнювачем), а не падає з KeyError. Так ми переживемо "урізані" CSV.
@@ -109,7 +111,11 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         "lon": df["longitude"].astype(float),
         # pd.to_datetime: текст "2020-04-01" -> справжня дата, з якою можна рахувати
         "date": pd.to_datetime(df["acq_date"]),
-        "time": df.get("acq_time", pd.Series(0, index=df.index)).astype(int),
+        # to_numeric(errors="coerce") + fillna(0): порожній чи кривий час -> 0, а не падіння всього файлу
+        # (просто astype(int) падав на першій порожній клітинці)
+        # Запасне значення — СТОВПЧИК нулів (zero), а не просто 0: з числа to_numeric повернув би число,
+        # у якого немає .fillna, і файл без цієї колонки падав би з AttributeError.
+        "time": pd.to_numeric(df.get("acq_time", zero), errors="coerce").fillna(0).astype(int),
         # Одне значення (рядок) pandas сам "розмножить" на всі рядки таблиці
         "sensor": sensor,
         "satellite": df.get("satellite", pd.Series("?", index=df.index)).astype(str),
@@ -118,10 +124,54 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         "daynight": df.get("daynight", pd.Series("D", index=df.index)).astype(str),
         # type: 0 = рослинна пожежа, 1 = вулкан, 2 = інше статичне джерело (заводи), 3 = офшор
         # fillna(0) — якщо типу немає, вважаємо рослинною пожежею; astype(int) — ціле число
-        "type": pd.to_numeric(df.get("type", 0), errors="coerce").fillna(0).astype(int),
+        "type": pd.to_numeric(df.get("type", zero), errors="coerce").fillna(0).astype(int),
     })
     # out[список] — лишаємо лише ці колонки і саме в такому порядку
     return out[UNIFIED_COLUMNS]
+
+
+class BadFileError(ValueError):
+    """Файл, який завантажили через сайт, — не FIRMS CSV. Текст помилки — для людини, українською."""
+
+
+# Колонки, без яких normalize() не працює. Датчик визначається окремо: brightness (MODIS) або bright_ti4 (VIIRS).
+REQUIRED_COLUMNS = ["latitude", "longitude", "acq_date", "confidence"]
+
+
+def read_upload(name: str, data: bytes) -> pd.DataFrame:
+    """Байти завантаженого файлу -> таблиця в єдиній схемі, або BadFileError з поясненням.
+
+    Навіщо: st.file_uploader(type="csv") перевіряє лише РОЗШИРЕННЯ. Перейменований photo.jpg
+    чи report.xlsx у test.csv пройде, і pd.read_csv впаде з червоним трейсбеком на весь екран.
+    Тут ловимо всі такі випадки і кажемо людині, що не так і що потрібно.
+    """
+    import io  # io.BytesIO — «файл у пам'яті» з байтів, щоб pandas читав його як звичайний файл
+
+    need = ", ".join(REQUIRED_COLUMNS) + " і brightness (MODIS) або bright_ti4 (VIIRS)"
+    # try / except: пробуємо виконати; якщо вилетіла помилка вказаного типу — переходимо в except
+    try:
+        df = pd.read_csv(io.BytesIO(data))
+    except UnicodeDecodeError:
+        # байти не складаються в текст — це картинка, xlsx, zip тощо, просто з іменем .csv
+        raise BadFileError(f"«{name}» — це не текстовий CSV (схоже на картинку, Excel чи архів, "
+                           "перейменований у .csv). Скачайте CSV з FIRMS ще раз.") from None
+    except pd.errors.EmptyDataError:
+        raise BadFileError(f"«{name}» порожній.") from None
+    except pd.errors.ParserError:
+        raise BadFileError(f"«{name}» не вдалось прочитати як CSV: рядки мають різну кількість колонок.") from None
+
+    cols = {c.lower() for c in df.columns}  # як у normalize — назви без різниці великих/малих літер
+    missing = [c for c in REQUIRED_COLUMNS if c not in cols]
+    if missing or not ({"brightness", "bright_ti4"} & cols):  # & — спільні елементи двох множин
+        raise BadFileError(f"«{name}» — невірний формат CSV: потрібні колонки {need}. "
+                           f"Бракує: {', '.join(missing) or 'brightness / bright_ti4'}.")
+    if df.empty:
+        raise BadFileError(f"«{name}»: заголовок є, а точок немає.")
+    try:
+        return normalize(df)
+    except Exception as e:  # noqa: BLE001 — тут це межа з чужим файлом: будь-яка помилка = поганий файл
+        # колонки на місці, але всередині сміття: «abc» замість широти, криві дати тощо
+        raise BadFileError(f"«{name}»: колонки є, але значення не читаються ({e}).") from None
 
 
 def load_raw(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
@@ -160,9 +210,10 @@ def load_cached(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     # Створюємо папку кешу, якщо її ще немає. parents=True — разом з батьківськими папками,
     # exist_ok=True — не падати, якщо папка вже існує.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    # ключ кешу залежить від списку файлів і їх розміру — додали файл -> кеш перебудується
-    # sig ("підпис") виглядає так: "modis_2020.csv:123456|viirs_2020.csv:987654"
-    sig = "|".join(f"{f.name}:{f.stat().st_size}" for f in files)
+    # ключ кешу залежить від списку файлів, їх розміру і часу зміни — додали чи замінили файл ->
+    # кеш перебудується (лише за розміром заміна файлу на інший такого ж розміру лишала старі дані)
+    # sig ("підпис") виглядає так: "modis_2020.csv:123456:1731590000000000000|viirs_2020.csv:..."
+    sig = "|".join(f"{f.name}:{f.stat().st_size}:{f.stat().st_mtime_ns}" for f in files)
     # md5 перетворює довгий підпис на короткий набір символів; беремо перші 12 — для імені файлу досить
     key = hashlib.md5(sig.encode()).hexdigest()[:12]
     cache = CACHE_DIR / f"unified_{key}.parquet"
