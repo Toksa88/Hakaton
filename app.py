@@ -188,6 +188,15 @@ with tab_cal:
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими
     fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
     c1.plotly_chart(fig, width="stretch")
+    # Кнопка завантаження: віддаємо ту саму таблицю (рік × тиждень/місяць), що намальована як теплова карта.
+    # rename_axis("рік") підписує стовпець з роками; utf-8-sig потрібен, щоб Excel правильно показав кирилицю.
+    c2.download_button(
+        "⬇️ Скачати CSV",
+        data=mat.rename_axis("рік").round(1).to_csv().encode("utf-8-sig"),
+        file_name=f"calendar_{'month' if freq == 'Місяць' else 'week'}.csv",
+        mime="text/csv",
+        key="dl_calendar",  # унікальний ключ, щоб не конфліктувало з кнопкою на іншій вкладці
+    )
     c2.caption("Кожна клітинка = скільки ділянок сітки горіло за цей період. "
                "Темніше = більше горіння.")
 
@@ -279,9 +288,19 @@ with tab_anom:
         # Для кожної пари (рік, тиждень) рахуємо дату першого дня тижня — людям зрозуміліше за номер тижня
         a["дата"] = [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(a.year, a.week)]
         # rename — українські назви колонок; [[...]] — вибір і порядок колонок; round(1) — 1 знак після коми
-        st.dataframe(a.rename(columns={"year": "рік", "week": "тиждень", "value": "активність",
-                                       "norm": "норма", "kind": "тип"})[["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
-                     .round(1), hide_index=True, width="stretch")
+        # Готуємо таблицю з українськими назвами колонок: і для показу, і для завантаження
+        table = (a.rename(columns={"year": "рік", "week": "тиждень", "value": "активність",
+                                   "norm": "норма", "kind": "тип"})
+                 [["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
+                 .round(1))
+        st.dataframe(table, hide_index=True, width="stretch")
+        st.download_button(
+            "⬇️ Скачати CSV",
+            data=table.to_csv(index=False).encode("utf-8-sig"),  # index=False: без зайвого стовпця з номерами рядків
+            file_name="anomalies.csv",
+            mime="text/csv",
+            key="dl_anomalies",
+        )
     # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
     yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
