@@ -162,6 +162,18 @@ m3.metric("Аномальних тижнів", len(anom[anom["kind"] == "вищ�
 # (pts.sensor == 'MODIS').sum() — рахуємо True, тобто кількість точок MODIS
 m4.metric("Точок MODIS / VIIRS", f"{(pts.sensor == 'MODIS').sum():,} / {(pts.sensor == 'VIIRS').sum():,}")
 
+# Опис поточних налаштувань — для шапки Excel-файлів: хто відкриє файл без додатку,
+# має бачити, звідки ці цифри. Словник зберігає порядок, у якому ми додаємо пари.
+export_info = {
+    "Зона": region if region != "Свій прямокутник" else f"прямокутник: довгота {bbox[0]}–{bbox[2]}, широта {bbox[1]}–{bbox[3]}",
+    "Роки": f"{years[0]}–{years[1]}",
+    "Мін. достовірність": min_conf,
+    "Клітинка сітки": f"{cell_deg}°",
+    "Прифронтові з 24.02.2022": "викинуті" if exclude_war else "враховані",
+    "Джерело": "NASA FIRMS: MODIS і VIIRS (активні осередки пожеж)",
+    "Сформовано": pd.Timestamp.now().strftime("%d.%m.%Y %H:%M"),
+}
+
 # Вкладки. Усе, що всередині "with tab_x:", малюється на відповідній вкладці.
 tab_cal, tab_warn, tab_crit, tab_anom, tab_map, tab_cmp, tab_about = st.tabs(
     ["📅 Календар", "🚨 Раннє попередження", "🔥 Критичні періоди", "⚠️ Аномалії", "🗺️ Карта",
@@ -189,19 +201,38 @@ with tab_cal:
     fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
     c1.plotly_chart(fig, width="stretch")
     # Кнопка завантаження: віддаємо ту саму таблицю (рік × тиждень/місяць), що намальована як теплова карта.
-    # rename_axis("рік") підписує стовпець з роками. У місячному режимі стовпці — числа 1..12,
-    # тож міняємо їх на назви місяців (як на графіку). export.to_excel_csv — CSV, що відкривається в Excel.
-    mat_out = mat.rename_axis("рік").round(1)
-    if freq == "Місяць":
-        mat_out.columns = MONTHS
+    # calendar_for_export: роки підписані, стовпці — назви місяців або дати початку тижнів ("02.04").
+    freq_code = "month" if freq == "Місяць" else "week"
+    mat_out = export.calendar_for_export(mat, freq_code, MONTHS)
     # Код ряду в назві файлу: скачавши гармонізований, MODIS і VIIRS, їх легко розрізнити
     series_code = {"Гармонізований": "harmonized", "Лише MODIS": "modis", "Лише VIIRS": "viirs"}[series_name]
+    fname = f"calendar_{freq_code}_{series_code}"
+    # Шапка Excel: спільні налаштування + що саме в цій таблиці + підсумки.
+    # {**a, **b} — новий словник з пар обох словників (порядок: спершу a, потім b).
+    cal_info = {
+        **export_info,
+        "Ряд": series_name + (f" (до {viirs_start:%d.%m.%Y} — MODIS × k за місяцем)"
+                              if series_name == "Гармонізований" and viirs_start is not None else ""),
+        "Крок": freq + (" (підпис — дата першого дня тижня)" if freq == "Тиждень" else ""),
+        "Що в клітинці": "скільки клітинок сітки горіло за цей період (пожежо-клітинко-дні); "
+                         "порожньо — за цей період даних немає",
+        **export.calendar_summary(mat, list(mat_out.columns)),
+    }
+    # Excel — для людей (шапка + кольори як на тепловій карті); CSV — для обробки в коді чи інших програмах
+    c2.download_button(
+        "⬇️ Скачати Excel",
+        data=export.to_excel(mat_out, index=True, heatmap=True, sheet="Календар",  # index=True: роки лишаємо
+                             title=f"Календар активності горіння — {region}", info=cal_info),
+        file_name=f"{fname}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_calendar_xlsx",  # унікальні ключі, щоб кнопки не конфліктували між собою
+    )
     c2.download_button(
         "⬇️ Скачати CSV",
-        data=export.to_excel_csv(mat_out, index=True),  # index=True: роки — це індекс, їх лишаємо
-        file_name=f"calendar_{'month' if freq == 'Місяць' else 'week'}_{series_code}.csv",
+        data=export.to_excel_csv(mat_out, index=True),
+        file_name=f"{fname}.csv",
         mime="text/csv",
-        key="dl_calendar",  # унікальний ключ, щоб не конфліктувало з кнопкою на іншій вкладці
+        key="dl_calendar",
     )
     c2.caption("Кожна клітинка = скільки ділянок сітки горіло за цей період. "
                "Темніше = більше горіння.")
@@ -300,7 +331,23 @@ with tab_anom:
                  [["рік", "тиждень", "дата", "активність", "норма", "z", "тип"]]
                  .round(1))
         st.dataframe(table, hide_index=True, width="stretch")
-        st.download_button(
+        # Дві кнопки в один рядок: st.columns ділить ширину навпіл
+        b1, b2 = st.columns(2)
+        b1.download_button(
+            "⬇️ Скачати Excel",
+            # без кольорів: тут різні величини в колонках. Шапка — налаштування + як читати таблицю
+            data=export.to_excel(table, sheet="Аномалії", title=f"Аномальні тижні — {region}", info={
+                **export_info,
+                "Правило": "тиждень аномальний, якщо |z| > 2: відхилення від норми цього тижня більше "
+                           "ніж 2 робастні стандартні відхилення (медіана/MAD)",
+                "Норма": "медіана активності цього тижня за всі роки",
+                "Знайдено": f"{len(table)} тижнів, з них вище норми — {(table['тип'] == 'вище норми').sum()}",
+            }),
+            file_name="anomalies.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_anomalies_xlsx",
+        )
+        b2.download_button(
             "⬇️ Скачати CSV",
             data=export.to_excel_csv(table),  # без зайвого стовпця з номерами рядків (index=False)
             file_name="anomalies.csv",

@@ -26,7 +26,7 @@ app.py                 Streamlit-додаток (усі вкладки)
 firecal/load.py        CSV FIRMS -> єдина схема (lat, lon, date, sensor, conf_class, ...)
 firecal/harmonize.py   гармонізація: сітка -> пожежо-клітинко-дні -> union -> калібрування k
 firecal/analytics.py   календар, норма, аномалії (робастний z), критичні періоди
-firecal/export.py      CSV для кнопок «Скачати» (формат під український Excel)
+firecal/export.py      файли для кнопок «Скачати»: CSV під український Excel і .xlsx з шапкою
 firecal/regions.py     зони інтересу: області (сітка firecal/oblasts.npz), групи, прифронтові
 scripts/               генератор тестових даних, smoke-тест додатку
 tests/                 pytest
@@ -119,5 +119,8 @@ data/raw/              сирі CSV (не в git)
   Добрі приклади для демо: Полісся 10.04.2020 (Чорнобиль) і Україна 20.03.2015 — 🔴.
 - Кнопки «Скачати CSV» — лише через `export.to_excel_csv` (`;`, десяткова кома, BOM): звичайний
   `to_csv()` український Excel відкриває однією колонкою. Назад у pandas: `read_csv(sep=";", decimal=",")`.
+- Поруч кнопка «Скачати Excel» (`export.to_excel`, потрібен `openpyxl` — власник погодив додати його
+  в `requirements.txt`). Над таблицею — шапка: налаштування з `app.export_info` + пояснення й підсумки.
+  Додаєш у сайдбар новий параметр — допиши його в `export_info`, інакше файл не скаже, як його отримали.
 - Залежності — у локальному `.venv` (`python -m venv .venv`, потім
   `.venv/Scripts/python -m pip install -r requirements.txt`); системний Python їх не має.
