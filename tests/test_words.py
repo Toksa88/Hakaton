@@ -88,3 +88,10 @@ def test_overlap_ratio():
     # рахуємо лише з дня старту VIIRS: 9 / 3 = 3
     assert harmonize.overlap_ratio(modis, viirs, pd.Timestamp("2012-01-01")) == 3.0
     assert harmonize.overlap_ratio(modis, viirs, None) is None
+
+
+def test_scale_ticks_marks_ends():
+    vals, texts = words.scale_ticks(4530)
+    assert vals[0] == 0 and vals[-1] == 4530
+    assert texts[0] == "0 · мало" and texts[-1].endswith("+ · багато")
+    assert vals == sorted(vals)

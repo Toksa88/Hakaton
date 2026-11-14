@@ -34,6 +34,16 @@ st.set_page_config(page_title="Календар горіння", page_icon="🔥
 # Підписи місяців для графіків (індекс 0 = січень)
 MONTHS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"]
 
+# Єдина система кольорів на весь додаток — глядач запам'ятовує "VIIRS — фіолетовий" і впізнає його скрізь:
+#   супутники — завжди однакові кольори; "узгоджено" (наш результат) — вогняний;
+#   "зазвичай / норма" — сірий; "зараз / вибране / проблема" — акцент (темно-червоний).
+# Кольори підібрані так, щоб читатися і на світлому, і на темному фоні.
+C_MODIS = "#3b82f6"      # синій
+C_VIIRS = "#8b5cf6"      # фіолетовий
+C_HARM = "#f97316"       # помаранчевий — "обидва супутники, узгоджено"
+C_NORM = "#9ca3af"       # сірий — "зазвичай"
+C_ACCENT = "#dc2626"     # червоний — "зараз", критичне
+
 
 # =====================================================================
 # ДАНІ. Функції з @st.cache_data виконуються лише раз для однакових аргументів.
@@ -253,54 +263,80 @@ with tab_cal:
                 "чи місяць. Найтемніший колір — 97-й перцентиль і вище, щоб один рекордний тиждень не "
                 "«вибілив» решту. Тижні рахуються від 1 січня: 52 на рік, однакові в усі роки.")
     c1, c2 = st.columns([3, 1])  # ліва колонка втричі ширша за праву
-    series_name = c2.radio("Ряд", ["Гармонізований", "Лише MODIS", "Лише VIIRS"],
-                           help="Перемкніть на 'Лише MODIS'/'Лише VIIRS', щоб побачити, чому без гармонізації роки непорівнянні")
+    # Назва на екрані -> (код для файлів, ряд даних). Перемикач — головна демонстрація проєкту:
+    # клацнеш «Лише VIIRS» — до 2012 порожньо; «Лише MODIS» — роки непорівнянні.
+    SERIES = {
+        "Обидва супутники, узгоджено": ("harmonized", activity),
+        "Лише MODIS (з 2000)": ("modis", daily["modis"]),
+        "Лише VIIRS (з 2012)": ("viirs", daily["viirs"]),
+    }
+    series_name = c2.radio("Дані", list(SERIES),
+                           help="Перемкніть на один супутник, щоб побачити, чому без узгодження роки непорівнянні")
     freq = c2.radio("Крок", ["Тиждень", "Місяць"])
-    # Словник "назва -> ряд даних", з якого беремо вибраний варіант
-    series = {"Гармонізований": activity, "Лише MODIS": daily["modis"], "Лише VIIRS": daily["viirs"]}[series_name]
-    # Таблиця: рядки = роки, стовпці = тижні (або місяці), значення = активність
+    series_code, series = SERIES[series_name]
+    per = "за місяць" if freq == "Місяць" else "за тиждень"
+    # Таблиця: рядки = роки, стовпці = тижні (або місяці), значення = осередки горіння
     mat = analytics.calendar_matrix(series, "month" if freq == "Місяць" else "week")
     # Верхня межа кольору = 97-й перцентиль: одна дуже аномальна клітинка (напр. 2022) не "вбиває"
     # контраст решти. quantile сам пропускає порожні клітинки (NaN).
     zmax = float(pd.Series(mat.values.ravel()).quantile(0.97))
     if not zmax > 0:  # захист: порожня таблиця дає NaN, а нульова активність не дає шкали
         zmax = 1.0
+    tick_vals, tick_text = words.scale_ticks(zmax)  # шкала: числа + «мало» внизу, «багато» вгорі
+    if freq == "Місяць":
+        x, hover_when = MONTHS, "%{x}"
+        custom = None
+    else:
+        # По X — номери тижнів, але підписуємо місяцями (людині «Кві» зрозуміліше за «тиждень 14»).
+        # А в підказці — дата початку тижня: customdata — таблиця тих самих розмірів, що й z.
+        x, hover_when = list(mat.columns), "тиждень з %{customdata}"
+        custom = [[analytics.week_start(y, w).strftime("%d.%m") for w in mat.columns] for y in mat.index]
     # go.Heatmap замість px.imshow, бо тільки він вміє xgap/ygap: проміжки між клітинками в пікселях
     fig = go.Figure(go.Heatmap(
-        z=mat.values,
-        x=MONTHS if freq == "Місяць" else list(mat.columns),
+        z=mat.values, x=x, customdata=custom,
         y=[str(y) for y in mat.index],  # перший рік знизу, як і було з origin="lower"
         colorscale="YlOrRd", zmin=0, zmax=zmax,
         xgap=2, ygap=2,  # 2 пікселі між клітинками
-        colorbar=dict(title="Активність"),
+        colorbar=dict(title=f"Осередків<br>{per}", tickvals=tick_vals, ticktext=tick_text),
         # hoverongaps=False — без підказки над порожніми клітинками (неповні тижні краю даних),
         # інакше там видно "Рік 2025, тиждень 50: " без числа
         hoverongaps=False,
-        hovertemplate="Рік %{y}, " + ("%{x}" if freq == "Місяць" else "тиждень %{x}") + ": %{z:,.0f}<extra></extra>",
+        hovertemplate="%{y}, " + hover_when + ": <b>%{z:,.0f}</b> осередків<extra></extra>",
     ))
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
     fig.update_layout(
-        title=f"Активність горіння по {'місяцях' if freq == 'Місяць' else 'тижнях'}, {years_label}",
-        xaxis_title="Місяць" if freq == "Місяць" else "Тиждень року", yaxis_title="Рік",
+        title=f"Осередки горіння {per}, {years_label}",
+        xaxis_title=None, yaxis_title=None,  # і так ясно: зліва роки, знизу місяці
         separators=", ",  # як в Україні: 12 345,6 (так само зроблено на графіку аномалій)
         height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=50, b=0))
+    if freq == "Тиждень":
+        # Підписи осі X — назви місяців у тижнях, де місяць починається
+        mt_weeks, mt_names = analytics.month_ticks()
+        fig.update_xaxes(tickvals=mt_weeks, ticktext=mt_names)
     # type="category" — роки як підписи, а не числа: інакше при одному-двох роках plotly малює
     # на осі "2 019,6" і "2 020,4" (таке саме на інших графіках по роках нижче)
     fig.update_yaxes(type="category")
     c1.plotly_chart(fig, width="stretch")
+    # Вибрано один супутник — пояснюємо висновок словами, щоб людина не мусила здогадуватись сама
+    if series_code != "harmonized":
+        r = harmonize.overlap_ratio(daily["modis"], daily["viirs"], viirs_start)
+        if r:
+            c1.warning(f"⚠️ **Без узгодження роки не можна порівнювати.** З {viirs_start:%Y} року VIIRS бачить "
+                       f"у {words.times_words(r)} більше осередків, ніж MODIS, — тож рік до і після "
+                       f"{viirs_start:%Y} виглядають по-різному лише через супутник. Тому за замовчуванням — "
+                       "обидва супутники, узгоджено.")
     # Кнопка завантаження: віддаємо ту саму таблицю (рік × тиждень/місяць), що намальована як теплова карта.
     # calendar_for_export: роки підписані, стовпці — назви місяців або дати початку тижнів ("02.04").
     freq_code = "month" if freq == "Місяць" else "week"
     mat_out = export.calendar_for_export(mat, freq_code, MONTHS)
-    # Код ряду в назві файлу: скачавши гармонізований, MODIS і VIIRS, їх легко розрізнити
-    series_code = {"Гармонізований": "harmonized", "Лише MODIS": "modis", "Лише VIIRS": "viirs"}[series_name]
+    # Код ряду (series_code) у назві файлу: скачавши узгоджений, MODIS і VIIRS, їх легко розрізнити
     fname = f"calendar_{freq_code}_{series_code}"
     # Шапка Excel: спільні налаштування + що саме в цій таблиці + підсумки.
     # {**a, **b} — новий словник з пар обох словників (порядок: спершу a, потім b).
     cal_info = {
         **export_info,
         "Ряд": series_name + (f" (до {viirs_start:%d.%m.%Y} — MODIS × k за місяцем)"
-                              if series_name == "Гармонізований" and viirs_start is not None else ""),
+                              if series_code == "harmonized" and viirs_start is not None else ""),
         "Крок": freq + (" (підпис — дата першого дня тижня)" if freq == "Тиждень" else ""),
         "Що в клітинці": "скільки клітинок сітки горіло за цей період (пожежо-клітинко-дні); "
                          "порожньо — за цей період даних немає",
@@ -528,26 +564,80 @@ with tab_map:
 # 5. MODIS vs VIIRS — доказ для журі, НАВІЩО потрібна гармонізація
 # =====================================================================
 with tab_cmp:
-    st.markdown("**Чому не можна просто скласти точки?** VIIRS дає у кілька разів більше точок на ту саму пожежу. "
-                "Нижче — сирі точки проти гармонізованих пожежо-клітинко-днів.")
-    # Сирі точки: групуємо за (рік, датчик), рахуємо кількість, unstack розгортає датчики в окремі колонки
+    how_to_read("Навіщо узгоджувати два супутники.", "Гортайте згори вниз: проблема → рішення → поправка.",
+                "MODIS (з 2000, піксель ~1 км) і VIIRS (з 2012, піксель 375 м) бачать ту саму пожежу по-різному: "
+                "VIIRS дає набагато більше точок. Ми зводимо обидва до спільної сітки (осередки горіння), "
+                "об'єднуємо, а роки до 2012 множимо на поправку k для кожного місяця. Деталі — «Методика».")
+    # Рік старту VIIRS — для вертикальної позначки на графіках (None, якщо VIIRS у даних немає)
+    v_year = viirs_start.year if viirs_start is not None else None
+
+    def year_lines(df: pd.DataFrame, lines: list[tuple[str, str, str, float]], title: str, unit: str):
+        """Лінії «по роках»: lines = [(колонка, назва в легенді, колір, товщина)] + позначка «запуск VIIRS».
+
+        x — роки рядками ("2012"): з type="category" plotly не малює дробових років на осі.
+        """
+        x = [str(y) for y in df.index]
+        fig = go.Figure()
+        for col, name, color, width in lines:
+            if col in df:
+                fig.add_trace(go.Scatter(x=x, y=df[col], name=name, mode="lines+markers",
+                                         line=dict(color=color, width=width), marker=dict(size=5),
+                                         hovertemplate=f"{name}, %{{x}}: <b>%{{y:,.0f}}</b> {unit}<extra></extra>"))
+        if v_year is not None and str(v_year) in x:
+            # Вертикальна пунктирна лінія у рік запуску VIIRS: yref="paper" — від низу до верху графіка.
+            # Пастка: на осі-категорії рядок "2012" plotly читає як НОМЕР позиції 2012 (лінія відлітає
+            # далеко праворуч і стискає графік). Тому даємо саме номер позиції року в списку x.
+            pos = x.index(str(v_year))
+            fig.add_shape(type="line", x0=pos, x1=pos, y0=0, y1=1, yref="paper",
+                          line=dict(color=C_NORM, dash="dot"))
+            fig.add_annotation(x=pos, y=1, yref="paper", text="запуск VIIRS", showarrow=False,
+                               yanchor="bottom", font=dict(color=C_NORM))
+        fig.update_layout(title=title, yaxis_title=unit, xaxis_type="category", separators=", ", height=340,
+                          margin=dict(l=0, r=0, t=50, b=0), legend=dict(orientation="h", y=-0.15))
+        return fig
+
+    # --- 1. ПРОБЛЕМА: сирі точки. groupby(рік, датчик).size() — скільки точок; unstack — датчики в колонки
+    st.subheader("1. Проблема: VIIRS бачить набагато більше точок")
     raw = pts.groupby([pts["date"].dt.year, "sensor"]).size().unstack(fill_value=0)
-    raw.index.name = "рік"
-    # Ті самі роки, але в клітинко-днях + наш гармонізований ряд
-    yr = daily.groupby(daily.index.year)[["modis", "viirs", "union"]].sum()
-    yr["гармонізований"] = activity.groupby(activity.index.year).sum()
-    yr.index.name = "рік"  # інакше вісь X підписана англійським "index"
-    c1, c2 = st.columns(2)
-    # update_xaxes(type="category") — роки як підписи, а не дробові числа (див. календар)
-    c1.plotly_chart(px.line(raw, markers=True, title="Сирі точки за рік",
-                            labels=dict(value="точок", variable="датчик")).update_xaxes(type="category"),
-                    width="stretch")
-    c2.plotly_chart(px.line(yr, markers=True, title="Пожежо-клітинко-дні за рік",
-                            labels=dict(value="клітинко-днів", variable="ряд")).update_xaxes(type="category"),
-                    width="stretch")
-    st.markdown(f"Початок VIIRS у даних: **{viirs_start:%d.%m.%Y}**" if viirs_start is not None else "VIIRS у даних немає.")
-    st.markdown("**Коефіцієнти калібрування k** (union / MODIS у період перекриття, по місяцях):")
-    st.dataframe(pd.DataFrame([k.round(2).values], columns=MONTHS), hide_index=True)
+    # Те саме по днях — щоб порахувати, у скільки разів VIIRS бачить більше, коли працюють обидва
+    pts_daily = pts.groupby([pts["date"].dt.normalize(), "sensor"]).size().unstack(fill_value=0)
+    r_pts = harmonize.overlap_ratio(pts_daily.get("MODIS", pd.Series(dtype=float)),
+                                    pts_daily.get("VIIRS", pd.Series(dtype=float)), viirs_start)
+    if r_pts:
+        st.markdown(f"З {v_year} року VIIRS дає у **{words.times_words(r_pts)} більше точок**, ніж MODIS, на ті самі "
+                    f"пожежі. Якщо просто скласти точки, {v_year} виглядає як різкий ріст пожеж, хоча змінився "
+                    "лише супутник.")
+    st.plotly_chart(year_lines(raw, [("MODIS", "MODIS", C_MODIS, 2), ("VIIRS", "VIIRS", C_VIIRS, 2)],
+                               "Сирі точки супутників за рік", "точок"), width="stretch")
+
+    # --- 2. РІШЕННЯ: спільна сітка + об'єднання. Сума осередків за рік для кожного ряду
+    st.subheader("2. Рішення: спільна сітка ~10 км і обидва супутники разом")
+    yr = daily.groupby(daily.index.year)[["modis", "viirs"]].sum()
+    yr["harm"] = analytics.yearly_totals(activity)
+    st.markdown("Точки обох супутників збираємо в ділянки ~10 км: ділянка, де за день був вогонь, — один "
+                "**осередок горіння**, скільки б точок туди не впало. Після 2012 беремо все, що бачив хоч один "
+                "супутник; до 2012 — MODIS з поправкою (крок 3). Помаранчева лінія — один безперервний ряд: "
+                "роки до і після запуску VIIRS тепер можна чесно порівнювати.")
+    st.plotly_chart(year_lines(yr, [("modis", "Лише MODIS", C_MODIS, 1.5), ("viirs", "Лише VIIRS", C_VIIRS, 1.5),
+                                    ("harm", "Обидва супутники, узгоджено", C_HARM, 4)],
+                               "Осередки горіння за рік", "осередків"), width="stretch")
+
+    # --- 3. ПОПРАВКА: k по місяцях стовпчиками — видно, що взимку і влітку вона різна
+    st.subheader("3. Поправка для років до 2012")
+    if viirs_start is None:
+        st.info("VIIRS у даних немає — поправку рахувати нема з чим, показуємо лише MODIS.")
+    else:
+        st.markdown(f"У роки, коли працюють обидва супутники (з {viirs_start:%d.%m.%Y}), рахуємо, у скільки разів "
+                    "MODIS недобачає в кожному місяці. Роки до 2012 множимо на це число — і вони стають "
+                    "порівнянними з сучасними.")
+        fig = go.Figure(go.Bar(x=MONTHS, y=k.values, marker_color=C_HARM,
+                               text=[words.fmt_times(v) for v in k.values], textposition="outside",
+                               hovertemplate="%{x}: MODIS × %{y:.2f}<extra></extra>"))
+        fig.add_hline(y=1, line_dash="dot", line_color=C_NORM, annotation_text="×1 — без поправки")
+        fig.update_layout(title="Поправка для MODIS по місяцях (науково: k = union / MODIS)", separators=", ",
+                          yaxis_title="у скільки разів", height=320, margin=dict(l=0, r=0, t=50, b=0),
+                          yaxis_range=[0, float(k.max()) * 1.2])
+        st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
 # 6. МЕТОДИКА — текст для журі (Markdown)

@@ -49,6 +49,29 @@ def fmt_times(r: float) -> str:
     return "×" + fmt_num(r, 0 if r >= 10 else 1)
 
 
+def scale_ticks(zmax: float) -> tuple[list[float], list[str]]:
+    """Підписи шкали кольорів: круглі числа + «мало» внизу і «багато» вгорі.
+
+    zmax — верх шкали (у нас 97-й перцентиль, тож найтемніший колір = «zmax і більше», звідси «+»).
+    Напр. zmax = 4530 -> [0, 1000, 2000, 3000, 4000, 4530] і ["0 · мало", "1 000", ..., "4 530+ · багато"].
+    """
+    if not zmax > 0:
+        return [0.0], ["0"]
+    # Крок — "кругле" число (1, 2 або 5, помножене на 10ⁿ), щоб на шкалі було ~4 поділки
+    raw = zmax / 4
+    mag = 10 ** int(f"{raw:e}".split("e")[1])          # порядок числа: 1130 -> 1000
+    step = min((m * mag for m in (1, 2, 5, 10) if m * mag >= raw), default=raw)
+    vals = [i * step for i in range(int(zmax // step) + 1)]
+    # Остання кругла поділка надто близько до верху — прибираємо, щоб підписи не налізли один на одний
+    if len(vals) > 1 and zmax - vals[-1] < step * 0.5:
+        vals.pop()
+    vals.append(zmax)
+    texts = [fmt_num(v) for v in vals]
+    texts[0] = "0 · мало"
+    texts[-1] = fmt_num(zmax) + "+ · багато"
+    return vals, texts
+
+
 def month_range(start: pd.Timestamp, end: pd.Timestamp) -> str:
     """Проміжок дат -> місяці: 22.03–29.04 -> "бер–кві", 05.07–25.07 -> "лип"."""
     a, b = MONTHS[start.month - 1].lower(), MONTHS[end.month - 1].lower()
