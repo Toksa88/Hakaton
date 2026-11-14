@@ -19,7 +19,6 @@
 """
 from __future__ import annotations  # дозволяє писати типи на кшталт tuple[int, int] у старших Python
 
-import io  # io.BytesIO — щоб читати завантажений файл з пам'яті, як звичайний файл
 
 import pandas as pd                 # таблиці (DataFrame) — основний інструмент роботи з даними
 import plotly.express as px         # швидкі інтерактивні графіки "одним рядком"
@@ -40,22 +39,27 @@ MONTHS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", 
 # ДАНІ. Функції з @st.cache_data виконуються лише раз для однакових аргументів.
 # =====================================================================
 @st.cache_data(show_spinner="Читаю дані FIRMS…")
-def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> pd.DataFrame:
-    """Повертає всі точки-хот-спіти в єдиній схемі.
+def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> tuple[pd.DataFrame, list[str], bool]:
+    """Повертає (точки в єдиній схемі, помилки завантажених файлів, чи взяли дані з завантажених).
 
     uploaded — файли, які користувач завантажив через сайт: кортеж пар (ім'я, байти).
-    Якщо нічого не завантажено — читаємо CSV з папки data/raw/.
+    Биті файли (картинка з іменем .csv, чужий CSV без потрібних колонок) не валять додаток:
+    їх пропускаємо, а текст помилки повертаємо, щоб показати людині. Якщо добрих файлів
+    немає взагалі (або нічого не завантажено) — читаємо CSV з папки data/raw/.
     """
-    if uploaded:
-        # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну без дублікатів
-        pts = load.combine([load.normalize(pd.read_csv(io.BytesIO(b))) for _, b in uploaded])
-    else:
-        pts = load.load_cached()
+    parts, errors = [], []
+    for name, data in uploaded:
+        try:
+            parts.append(load.read_upload(name, data))
+        except load.BadFileError as e:
+            errors.append(str(e))  # str(помилка) — її текст, вже зрозумілий людині
+    # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну без дублікатів
+    pts = load.combine(parts) if parts else load.load_cached()
     # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
     # далі фільтр за областями просто дивиться в цю колонку
     if not pts.empty:
         pts["oblast"] = regions.oblast_of(pts["lat"], pts["lon"])
-    return pts
+    return pts, errors, bool(parts)
 
 
 @st.cache_data(show_spinner="Гармонізую MODIS і VIIRS…")
@@ -88,7 +92,12 @@ with st.sidebar.expander("📂 Свої дані FIRMS (CSV)", expanded=False):
     files = st.file_uploader("MODIS і/або VIIRS CSV", type="csv", accept_multiple_files=True)
 # Перетворюємо файли в кортеж (ім'я, байти) — такий формат кеш уміє порівнювати
 uploaded = tuple((f.name, f.getvalue()) for f in files) if files else ()
-points = get_points(uploaded)
+points, upload_errors, from_upload = get_points(uploaded)
+# Биті файли — акуратне повідомлення замість трейсбеку на весь екран
+for err in upload_errors:
+    st.sidebar.error(err)
+if upload_errors and not from_upload:
+    st.sidebar.info("Жоден завантажений файл не підійшов — показую дані з `data/raw/`.")
 
 # Якщо даних немає взагалі — показуємо підказку і зупиняємо скрипт (st.stop)
 if points.empty:
@@ -123,16 +132,23 @@ exclude_war = st.sidebar.checkbox(
 # Слайдер років: межі беремо з самих даних; третій аргумент — діапазон за замовчуванням.
 # default_years відкидає неповні роки на краях (напр. 2000, де MODIS лише з листопада).
 y_min, y_max = int(points["date"].dt.year.min()), int(points["date"].dt.year.max())
-years = st.sidebar.slider("Роки", y_min, y_max, analytics.default_years(points["date"]),
-                          help="Неповні роки на краях даних (напр. 2000 — MODIS лише з листопада) "
-                               "за замовчуванням вимкнені, бо виглядають як провал.")
+if y_min == y_max:
+    # Дані лише за один рік (напр. завантажили один річний файл FIRMS): слайдер з однаковими
+    # краями Streamlit не малює — падає з StreamlitInvalidMinMaxError. Тож просто пишемо рік.
+    years = (y_min, y_max)
+    st.sidebar.caption(f"Роки: у даних лише {y_min}. Норму й аномалії рахувати нема з чим — "
+                       "для них потрібні кілька років.")
+else:
+    years = st.sidebar.slider("Роки", y_min, y_max, analytics.default_years(points["date"]),
+                              help="Неповні роки на краях даних (напр. 2000 — MODIS лише з листопада) "
+                                   "за замовчуванням вимкнені, бо виглядають як провал.")
 # Мінімальна достовірність: low пропускає все, high — лише найнадійніші точки
 min_conf = st.sidebar.select_slider("Мін. достовірність", ["low", "nominal", "high"], value="nominal")
 # Розмір клітинки сітки в градусах (0.1° ≈ 8×11 км в Україні). Менше = детальніше, але шумніше.
 cell_deg = st.sidebar.select_slider("Розмір клітинки сітки, °", [0.05, 0.1, 0.25, 0.5], value=0.1)
 
 # Попередження, якщо в data/raw/ лежать синтетичні файли (їхні назви починаються з SAMPLE)
-if any(n.startswith("SAMPLE") for n in [f.name for f in load.RAW_DIR.glob("*.csv")]) and not uploaded:
+if any(n.startswith("SAMPLE") for n in [f.name for f in load.RAW_DIR.glob("*.csv")]) and not from_upload:
     st.sidebar.error("⚠️ Зараз показано СИНТЕТИЧНІ тестові дані. Замініть їх справжніми з FIRMS.")
 
 # Перетворюємо вибрані роки в дати: з 1 січня першого року до 31 грудня останнього
@@ -199,6 +215,9 @@ with tab_cal:
     )
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими
     fig.update_layout(height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=30, b=0))
+    # type="category" — роки як підписи, а не числа: інакше при одному-двох роках plotly малює
+    # на осі "2 019,6" і "2 020,4" (таке саме на інших графіках по роках нижче)
+    fig.update_yaxes(type="category")
     c1.plotly_chart(fig, width="stretch")
     # Кнопка завантаження: віддаємо ту саму таблицю (рік × тиждень/місяць), що намальована як теплова карта.
     # calendar_for_export: роки підписані, стовпці — назви місяців або дати початку тижнів ("02.04").
@@ -361,7 +380,7 @@ with tab_anom:
     fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
     # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
     fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False,
-                      separators=", ")
+                      separators=", ", xaxis_type="category")  # роки як підписи (див. календар)
     # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
     fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
     st.plotly_chart(fig, width="stretch")
@@ -370,14 +389,16 @@ with tab_anom:
 # 4. КАРТА — де горить найчастіше (теплова карта щільності)
 # =====================================================================
 with tab_map:
-    if cells.empty:
-        st.info("Немає пожеж у вибраній зоні/періоді.")
+    # Вибір місяців: format_func показує "Січ" замість 1
+    months = st.multiselect("Місяці", list(range(1, 13)), default=list(range(1, 13)),
+                            format_func=lambda m: MONTHS[m - 1])
+    # Скільки днів горіла кожна клітинка у вибрані місяці (деталі — у firecal/mapgrid.py).
+    # Порожньо, якщо в зоні немає пожеж АБО не вибрано жодного місяця — тоді карту не малюємо
+    # (раніше без місяців карта падала з ValueError). НЕ st.stop(): він обірвав би й наступні вкладки.
+    agg = mapgrid.burn_days(cells, months) if not cells.empty else pd.DataFrame()
+    if agg.empty:
+        st.info("Немає пожеж у вибраній зоні/періоді." if months else "Виберіть хоча б один місяць.")
     else:
-        # Вибір місяців: format_func показує "Січ" замість 1
-        months = st.multiselect("Місяці", list(range(1, 13)), default=list(range(1, 13)),
-                                format_func=lambda m: MONTHS[m - 1])
-        # Скільки днів горіла кожна клітинка у вибрані місяці (деталі й «чому квадрати» — у firecal/mapgrid.py)
-        agg = mapgrid.burn_days(cells, months)
         # Плавна картинка «де горить найчастіше», розмита в градусах, а не в пікселях (див. mapgrid.py).
         # НЕ density_map: та додає плями, що накладаються, і при віддаленні заливає червоним усю країну.
         smooth = mapgrid.smooth_image(agg, cell_deg)
@@ -418,11 +439,15 @@ with tab_cmp:
     # Ті самі роки, але в клітинко-днях + наш гармонізований ряд
     yr = daily.groupby(daily.index.year)[["modis", "viirs", "union"]].sum()
     yr["гармонізований"] = activity.groupby(activity.index.year).sum()
+    yr.index.name = "рік"  # інакше вісь X підписана англійським "index"
     c1, c2 = st.columns(2)
+    # update_xaxes(type="category") — роки як підписи, а не дробові числа (див. календар)
     c1.plotly_chart(px.line(raw, markers=True, title="Сирі точки за рік",
-                            labels=dict(value="точок", variable="датчик")), width="stretch")
+                            labels=dict(value="точок", variable="датчик")).update_xaxes(type="category"),
+                    width="stretch")
     c2.plotly_chart(px.line(yr, markers=True, title="Пожежо-клітинко-дні за рік",
-                            labels=dict(value="клітинко-днів", variable="ряд")), width="stretch")
+                            labels=dict(value="клітинко-днів", variable="ряд")).update_xaxes(type="category"),
+                    width="stretch")
     st.markdown(f"Початок VIIRS у даних: **{viirs_start:%d.%m.%Y}**" if viirs_start is not None else "VIIRS у даних немає.")
     st.markdown("**Коефіцієнти калібрування k** (union / MODIS у період перекриття, по місяцях):")
     st.dataframe(pd.DataFrame([k.round(2).values], columns=MONTHS), hide_index=True)

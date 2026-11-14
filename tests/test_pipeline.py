@@ -290,3 +290,58 @@ def test_excel_header_block_above_table():
     # 1 заголовок + 5 параметрів + 1 порожній рядок = 7 рядків шапки, таблиця — з 8-го
     assert ws["A8"].value == "рік" and ws["A9"].value == 2020
     assert ws.freeze_panes == "B9"
+
+
+def test_upload_rejects_non_firms_files_with_clear_message():
+    # Перейменовані у .csv картинка/Excel, чужий CSV, порожній файл — не трейсбек,
+    # а BadFileError з поясненням українською (app.py показує його через st.error).
+    import io
+    import pytest
+    from PIL import Image
+    from firecal import load
+
+    def jpg_bytes():
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "red").save(buf, format="JPEG")
+        return buf.getvalue()
+
+    def xlsx_bytes():
+        buf = io.BytesIO()
+        pd.DataFrame({"a": [1]}).to_excel(buf, index=False)
+        return buf.getvalue()
+
+    bad = {
+        "photo.csv": jpg_bytes(),
+        "report.csv": xlsx_bytes(),
+        "empty.csv": b"",
+        "other.csv": "name,price\nхліб,30\n".encode(),                       # чужий CSV
+        "header_only.csv": b"latitude,longitude,acq_date,confidence,brightness\n",
+        "garbage.csv": b"latitude,longitude,acq_date,confidence,brightness\nabc,30,2020-04-01,50,300\n",
+    }
+    for name, data in bad.items():
+        with pytest.raises(load.BadFileError) as e:
+            load.read_upload(name, data)
+        assert name in str(e.value)                       # людина бачить, ЯКИЙ файл поганий
+    # у повідомленні про колонки — перелік того, що потрібно
+    with pytest.raises(load.BadFileError, match="latitude"):
+        load.read_upload("other.csv", bad["other.csv"])
+
+
+def test_upload_accepts_firms_csv_with_blank_time():
+    # Нормальний FIRMS CSV читається; порожній acq_time не валить файл (раніше astype(int) падав на NaN).
+    from firecal import load
+    csv = ("LATITUDE,LONGITUDE,BRIGHTNESS,ACQ_DATE,ACQ_TIME,CONFIDENCE,FRP,TYPE\n"
+           "50.1,30.1,320,2020-04-01,1035,85,12.5,0\n"
+           "50.2,30.2,310,2020-04-01,,40,3.1,0\n").encode()
+    df = load.read_upload("modis.csv", csv)
+    assert len(df) == 2 and set(df["sensor"]) == {"MODIS"}
+    assert list(df["conf_class"]) == ["high", "nominal"]
+    assert list(df["time"]) == [1035, 0]
+
+
+def test_upload_minimal_firms_csv_without_optional_columns():
+    # Лише обов'язкові колонки (без acq_time, type, frp, satellite) — файл читається, а не падає.
+    from firecal import load
+    csv = b"latitude,longitude,brightness,acq_date,confidence\n50.1,30.1,320,2020-04-01,85\n"
+    df = load.read_upload("min.csv", csv)
+    assert len(df) == 1 and df["time"].iloc[0] == 0 and df["type"].iloc[0] == 0
