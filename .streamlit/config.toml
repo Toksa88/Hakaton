@@ -1,0 +1,25 @@
+# Вигляд додатку (тема, шрифт). Секрети тут НЕ зберігати — для них .streamlit/secrets.toml (у .gitignore).
+# Тема — як у системі людини (світла чи темна): тому задаємо кольори окремо для обох, а не "base".
+
+[client]
+# Ховає кнопку "Deploy" і пункти меню розробника — для журі це шум. "viewer", а не "minimal":
+# у "minimal" зникає все меню ⋮ разом із перемикачем світлої/темної теми.
+toolbarMode = "viewer"
+
+[theme]
+# Шрифт Inter (є кирилиця) з Google Fonts; без інтернету Streamlit візьме звичайний без засічок
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseRadius = "0.6rem"
+
+[theme.light]
+primaryColor = "#ea580c"              # помаранчевий "вогонь" — кнопки, слайдери, активна вкладка
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#fff7ed"  # теплий світлий фон бічної панелі й полів
+textColor = "#1c1917"
+
+[theme.dark]
+primaryColor = "#f97316"
+backgroundColor = "#111113"
+secondaryBackgroundColor = "#1d1b1a"
+textColor = "#f5f5f4"

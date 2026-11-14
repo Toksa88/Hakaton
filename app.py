@@ -197,7 +197,39 @@ pts, cells, daily, activity, k, viirs_start = run_pipeline(
 # =====================================================================
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
 # =====================================================================
-st.title(f"Календар активності горіння — {region}")
+# Трохи власного CSS — щоб сторінка виглядала як продуманий сайт, а не як "скрипт на Streamlit".
+# Кольори — напівпрозорі (rgba), тож однаково добре виглядають і в світлій, і в темній темі.
+# data-testid — внутрішні назви блоків Streamlit; якщо після оновлення Streamlit щось "з'їде" — дивитись тут.
+st.markdown("""
+<style>
+/* Менше порожнього місця згори сторінки */
+[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; }
+/* Банер-заголовок */
+.hero { padding: 18px 22px; border-radius: 14px; margin-bottom: 6px;
+        background: linear-gradient(110deg, rgba(249,115,22,.18), rgba(220,38,38,.10) 55%, rgba(249,115,22,0) 90%);
+        border: 1px solid rgba(249,115,22,.25); }
+.hero-kicker { font-size: .85rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .75; }
+.hero-title { font-size: 2.1rem; font-weight: 700; line-height: 1.15; margin: 2px 0 4px; }
+.hero-title small { font-size: 1rem; font-weight: 500; opacity: .7; }
+.hero-sub { font-size: 1rem; opacity: .85; }
+/* Картки шапки — плитки з рамкою */
+[data-testid="stMetric"] { background: rgba(249,115,22,.06); border: 1px solid rgba(249,115,22,.22);
+                           border-radius: 12px; padding: 12px 16px; }
+/* Вкладки — трохи більший шрифт, щоб їх помічали */
+button[data-baseweb="tab"] p { font-size: 1rem; font-weight: 500; }
+@media (max-width: 640px) { .hero-title { font-size: 1.5rem; } }
+</style>
+""", unsafe_allow_html=True)
+
+# Банер: велика назва зони (без довгого переліку областей у дужках — він стоїть дрібно поруч)
+zone_main, _, zone_rest = region.partition(" (")  # "Полісся (Житомирська, ...)" -> "Полісся", "Житомирська, ...)"
+zone_small = f" <small>({zone_rest}</small>" if zone_rest else ""
+st.markdown(
+    f'<div class="hero"><div class="hero-kicker">🔥 Календар горіння</div>'
+    f'<div class="hero-title">{zone_main}{zone_small}</div>'
+    f'<div class="hero-sub">Активні пожежі із супутників NASA MODIS і VIIRS, узгоджені в один календар: '
+    f'коли зазвичай горить, коли було незвично і що відбувається зараз.</div></div>',
+    unsafe_allow_html=True)
 # Один рядок-підсумок: що саме показано. Видно на всіх вкладках, не відкриваючи бічне меню.
 st.caption(f"📍 **{region}** · 📆 **{years_label}** · ділянка сітки **{words.CELL_LABELS[cell_deg]}** · "
            f"достовірність точок: **{words.CONF_LABELS[min_conf]}** і вище"
