@@ -301,12 +301,14 @@ with tab_anom:
             mime="text/csv",
             key="dl_anomalies",
         )
-    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
+     # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
     yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
                  color=yearly.values, color_continuous_scale="YlOrRd")
     fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
     fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False)
+    # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
+    fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
     st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
