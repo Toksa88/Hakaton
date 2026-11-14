@@ -354,6 +354,19 @@ with tab_crit:
 with tab_anom:
     st.caption("Тиждень вважається аномальним, якщо відхилення від багаторічної норми цього тижня "
                "більше ніж 2 робастні стандартні відхилення (медіана/MAD).")
+    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
+    yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
+    fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
+                 color=yearly.values, color_continuous_scale="YlOrRd",
+                 title=f"Активність за рік, {years[0]}–{years[1]}")
+    fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
+    # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
+    fig.update_layout(height=320, margin=dict(l=0, r=0, t=50, b=0), coloraxis_showscale=False,
+                      separators=", ", xaxis_type="category")  # роки як підписи (див. календар)
+    # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
+    fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
+    st.plotly_chart(fig, width="stretch")
+    # Потім таблиця конкретних аномальних тижнів і кнопки завантаження
     if anom.empty:
         st.info("Аномалій не знайдено.")
     else:
@@ -389,18 +402,7 @@ with tab_anom:
             file_name="anomalies.csv",
             mime="text/csv",
             key="dl_anomalies",
-        )
-    # Стовпчики "активність за кожен рік" + пунктир медіани: видно аномальні роки цілком
-    yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
-    fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
-                 color=yearly.values, color_continuous_scale="YlOrRd")
-    fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
-    # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
-    fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), coloraxis_showscale=False,
-                      separators=", ", xaxis_type="category")  # роки як підписи (див. календар)
-    # Своя підказка при наведенні: без технічного "color=...", число з роздільником тисяч і 1 знаком після коми
-    fig.update_traces(hovertemplate="Рік: %{x}<br>Активність за рік: %{y:,.1f}<extra></extra>")
-    st.plotly_chart(fig, width="stretch")
+            )
 
 # =====================================================================
 # 4. КАРТА — де горить найчастіше (теплова карта щільності)
