@@ -159,3 +159,49 @@ def test_critical_period_found():
     assert not crit.empty
     # iloc[0] — перший рядок таблиці (перший знайдений період); на нього має припадати більшість горіння
     assert crit.iloc[0]["частка річного горіння, %"] > 50
+
+
+def test_series_ends_on_last_data_day():
+    """Баг: дні після кінця даних ставали нулями до 31 грудня, і раннє попередження
+    на 31.12 показувало "0 пожеж". Ряд має закінчуватись останнім днем, за який є знімки."""
+    rows = [(50.05, 30.05, 320, d.strftime("%Y-%m-%d"), 1000, 60, 5, 0)
+            for d in pd.date_range("2010-01-01", "2012-08-15")]  # щодня 1 пожежа, дані до 15.08.2012
+    pts = load.normalize(_modis(rows))
+    _, _, daily, act, _, _ = harmonize.run_pipeline(pts, None, "2010-01-01", "2012-12-31")
+    assert act.index.max() == pd.Timestamp("2012-08-15") and daily.index.max() == pd.Timestamp("2012-08-15")
+    ew = analytics.early_warning(act)  # за замовчуванням — останній день ряду
+    assert ew["as_of"] == pd.Timestamp("2012-08-15") and ew["current"] == 7  # 7 днів × 1 пожежа
+
+
+def test_partial_week_dropped():
+    """Тиждень, обрізаний кінцем даних (3 дні з 7), не потрапляє в тижневі суми й аномалії."""
+    act = pd.Series(1.0, index=pd.date_range("2019-01-01", "2021-01-17"))  # 2021: тижні 1–2 повні, 3 — 3 дні
+    w = analytics.weekly(act)
+    w2021 = w[w["year"] == 2021]
+    assert w2021["week"].tolist() == [1, 2] and (w2021["value"] == 7).all()
+    assert analytics.anomalies(act).empty  # щодня однаково -> жодних аномалій, і "тихого" 3-го тижня теж
+
+
+def test_trend_does_not_peek_into_future():
+    """Баг: для 20.12.2015 вікно "наступні 4 тижні" 21.12.2015–17.01.2016 рахувалось як рік 2016,
+    тож у "історію" потрапляло майбутнє самої дати. Тепер рік вікна = рік дати."""
+    act = pd.Series(1.0, index=pd.date_range("2010-01-01", "2020-12-31"))
+    act["2015-12-21":"2016-01-17"] = 1000.0  # величезний сплеск ОДРАЗУ після вибраної дати
+    nxt = analytics.window_sums(act, pd.Timestamp("2015-12-20"), 28, shift=28)
+    assert nxt[2015] == 28 * 1000  # вікно після 20.12.2015 записане як 2015 — і early_warning його викине
+    assert nxt[2014] == 28  # звичайний рік не зачеплено
+    assert analytics.early_warning(act, "2015-12-20")["trend"] == 1.0  # сплеск не просочився в прогноз
+
+
+def test_early_warning_needs_full_window():
+    """Вікно, що вилазить за початок даних, не порівнюємо (раніше "зараз" рахувалось за менше днів)."""
+    act = pd.Series(1.0, index=pd.date_range("2003-01-01", "2010-12-31"))
+    assert analytics.early_warning(act, "2003-01-02", window=7) == {}
+    assert analytics.early_warning(act, "2003-01-07", window=7)["current"] == 7
+
+
+def test_combine_drops_duplicate_points():
+    """Той самий файл, завантажений двічі (через сайт), не подвоює точки."""
+    m = load.normalize(_modis([(50, 30, 320, "2020-04-01", 1000, 60, 5, 0), (50, 31, 320, "2020-04-01", 1000, 60, 5, 0)]))
+    both = load.combine([m, m])
+    assert len(both) == 2 and both.index.tolist() == [0, 1]

@@ -50,15 +50,24 @@ def default_years(dates: pd.Series) -> tuple[int, int]:
 
 
 def weekly(activity: pd.Series) -> pd.DataFrame:
-    """Денний ряд -> суми по тижнях року (1..52, див. week_of_year)."""
+    """Денний ряд -> суми по тижнях року (1..52, див. week_of_year).
+
+    Лише ПОВНІ тижні: тиждень, обрізаний початком чи кінцем даних (напр. дані до середи),
+    відкидаємо — інакше 3 дні виглядали б як "дуже тихий тиждень" і давали хибну аномалію.
+    """
     df = pd.DataFrame({
         "year": activity.index.year,
         "week": week_of_year(activity.index),
         "value": activity.to_numpy(),
     })
-    # Групуємо дні за парою (рік, тиждень) і сумуємо: 7 денних значень -> одне тижневе.
+    # Групуємо дні за парою (рік, тиждень): сума значень і кількість днів (size), що є в даних.
     # as_index=False — year і week лишаються звичайними колонками, а не стають індексом.
-    return df.groupby(["year", "week"], as_index=False)["value"].sum()
+    w = df.groupby(["year", "week"], as_index=False).agg(value=("value", "sum"), days=("value", "size"))
+    # Скільки днів МАЄ бути в тижні: 7, а в 52-му — решта року (8 днів, у високосний рік 9).
+    # 365 + 1 у високосний рік мінус 357 днів попередніх 51 тижня.
+    leap = pd.to_datetime(w["year"].astype(str) + "-12-31").dt.is_leap_year
+    full = np.where(w["week"] == 52, 365 + leap.astype(int) - 357, 7)
+    return w[w["days"] == full][["year", "week", "value"]].reset_index(drop=True)
 
 
 def calendar_matrix(activity: pd.Series, freq: str = "week") -> pd.DataFrame:
@@ -121,16 +130,20 @@ def _same_day(ts: pd.Timestamp, year: int) -> pd.Timestamp:
         return ts.replace(year=year, day=28)
 
 
-def window_sums(activity: pd.Series, end: pd.Timestamp, days: int) -> pd.Series:
+def window_sums(activity: pd.Series, end: pd.Timestamp, days: int, shift: int = 0) -> pd.Series:
     """
     Сума активності за `days` днів, що закінчуються датою `end` (включно), — у КОЖНОМУ році даних.
-    Повертає Series: індекс = рік, значення = сума за ці календарні дні того року.
+    Повертає Series: індекс = рік дати `end`, значення = сума за ці календарні дні того року.
     Напр. end = 10.04.2020, days = 7 -> для кожного року сума за 04.04–10.04.
+    shift — зсунути вікно на стільки днів уперед від `end` (для "наступних 4 тижнів").
+      Рік у індексі все одно — рік `end`, навіть якщо вікно перелізло в січень наступного року.
+      Інакше (виправлений баг) вікно 21.12.2015–17.01.2016 записувалось як "2016", і в "історію"
+      для дати 20.12.2015 потрапляло її власне майбутнє.
     Роки, де вікно не повністю покрите даними, пропускаємо — інакше вони виглядали б "тихими".
     """
     out = {}
     for y in sorted(set(activity.index.year)):
-        e = _same_day(end, y)
+        e = _same_day(end, y) + pd.Timedelta(days=shift)
         s = e - pd.Timedelta(days=days - 1)
         # Вікно має бути цілком усередині даних (не обрізане початком/кінцем ряду)
         if s < activity.index.min() or e > activity.index.max():
@@ -165,6 +178,11 @@ def early_warning(activity: pd.Series, as_of=None, window: int = 7, horizon: int
     as_of = pd.Timestamp(as_of) if as_of is not None else activity.index.max()
     cur_year = as_of.year
 
+    # Поточне вікно мусить бути цілком у даних. Інакше (виправлений баг) на 02.01 з вікном 7 днів
+    # "зараз" рахувалось лише за 2 дні, а норма інших років — за 7, і рівень виходив заниженим.
+    if as_of - pd.Timedelta(days=window - 1) < activity.index.min() or as_of > activity.index.max():
+        return {}
+
     # 1–2. Поточне вікно і ті самі дні в інші роки
     sums = window_sums(activity, as_of, window)
     current = float(activity.loc[as_of - pd.Timedelta(days=window - 1):as_of].sum())
@@ -193,7 +211,8 @@ def early_warning(activity: pd.Series, as_of=None, window: int = 7, horizon: int
         level = "низький"
 
     # 4. Прогноз сезону: медіана (наступні horizon днів) / медіана (попередні horizon днів) по інших роках
-    nxt = window_sums(activity, as_of + pd.Timedelta(days=horizon), horizon).drop(cur_year, errors="ignore")
+    # shift=horizon: вікно "наступні horizon днів" ПІСЛЯ as_of, але з роком самої дати as_of
+    nxt = window_sums(activity, as_of, horizon, shift=horizon).drop(cur_year, errors="ignore")
     prv = window_sums(activity, as_of, horizon).drop(cur_year, errors="ignore")
     common = nxt.index.intersection(prv.index)  # лише роки, де є обидва вікна
     trend = float(nxt[common].median() / prv[common].median()) if len(common) and prv[common].median() > 0 else None

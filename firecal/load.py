@@ -133,12 +133,21 @@ def load_raw(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
         # щоб решта коду не падала (app.py сам покаже підказку "немає даних").
         return pd.DataFrame(columns=UNIFIED_COLUMNS)
     # "List comprehension": для кожного файлу f читаємо CSV і нормалізуємо — отримуємо список таблиць
-    parts = [normalize(pd.read_csv(f)) for f in files]
+    return combine([normalize(pd.read_csv(f)) for f in files])
+
+
+def combine(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Склеює нормалізовані таблиці в одну і прибирає дублікати точок.
+
+    Спільна для data/raw і для файлів, завантажених через сайт (app.get_points): раніше
+    завантажені вручну файли не чистились, і той самий файл двічі подвоював кількість точок.
+    """
     # concat склеює таблиці одна під одною. ignore_index=True — нумерація рядків наново 0,1,2,...
     df = pd.concat(parts, ignore_index=True)
     # одні й ті самі дані могли скачати двічі (архів + NRT) -> прибираємо точні дублікати
-    # subset — рядки вважаються дублікатами, якщо збігаються саме ці колонки
-    return df.drop_duplicates(subset=["lat", "lon", "date", "time", "satellite"])
+    # subset — рядки вважаються дублікатами, якщо збігаються саме ці колонки;
+    # ignore_index=True — після викидання рядків знову нумеруємо 0,1,2,...
+    return df.drop_duplicates(subset=["lat", "lon", "date", "time", "satellite"], ignore_index=True)
 
 
 def load_cached(raw_dir: Path = RAW_DIR) -> pd.DataFrame:

@@ -47,9 +47,8 @@ def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> pd.DataFrame:
     Якщо нічого не завантажено — читаємо CSV з папки data/raw/.
     """
     if uploaded:
-        # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну
-        parts = [load.normalize(pd.read_csv(io.BytesIO(b))) for _, b in uploaded]
-        pts = pd.concat(parts, ignore_index=True)
+        # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну без дублікатів
+        pts = load.combine([load.normalize(pd.read_csv(io.BytesIO(b))) for _, b in uploaded])
     else:
         pts = load.load_cached()
     # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
@@ -206,8 +205,15 @@ with tab_warn:
     window = c1.select_slider("Вікно, днів", [3, 7, 14, 30], value=7,
                               help="За скільки останніх днів рахуємо активність")
     ew = analytics.early_warning(activity, as_of, window=window)
+    # Слайдер за замовчуванням ховає неповний останній рік, а "зараз" для служб попередження —
+    # саме там. Підказуємо, що свіжіші дані є, щоб ніхто не прийняв минулий грудень за "сьогодні".
+    data_last = points["date"].max()
+    if data_last > activity.index.max():
+        c1.caption(f"Дані є до {data_last:%d.%m.%Y} — посуньте правий край слайдера «Роки» на "
+                   f"{data_last.year}, щоб побачити найсвіжіший стан.")
     if not ew:
-        st.info("Замало років для порівняння — виберіть ширший діапазон років.")
+        st.info("Недостатньо даних для порівняння: вікно не вміщується в дані або для цих днів "
+                "немає інших років. Виберіть пізнішу дату або ширший діапазон років.")
     else:
         icon, meaning = analytics.LEVELS[ew["level"]]
         c2.markdown(f"## {icon} Рівень: {ew['level']}")
