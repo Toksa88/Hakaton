@@ -280,7 +280,7 @@ def test_excel_header_block_above_table():
     from firecal import export
     mat = pd.DataFrame([[1.0, 9.0], [2.0, 2.0]], index=pd.Index([2020, 2021], name="рік"), columns=[1, 14])
     summary = export.calendar_summary(mat, ["01.01", "02.04"])
-    assert summary["Найактивніший рік"] == "2020 (10)"   # 1 + 9
+    assert summary["Найгарячіший рік"] == "2020 (10)"   # 1 + 9
     assert summary["Найтихіший рік"] == "2021 (4)"      # 2 + 2
     assert summary["Пік сезону (в середньому)"] == "02.04"  # середнє (9+2)/2 > (1+2)/2
     raw = export.to_excel(mat, index=True, heatmap=True, title="Календар", info={"Зона": "Україна", **summary})
