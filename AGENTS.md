@@ -26,6 +26,7 @@ app.py                 Streamlit-додаток (усі вкладки)
 firecal/load.py        CSV FIRMS -> єдина схема (lat, lon, date, sensor, conf_class, ...)
 firecal/harmonize.py   гармонізація: сітка -> пожежо-клітинко-дні -> union -> калібрування k
 firecal/analytics.py   календар, норма, аномалії (робастний z), критичні періоди
+firecal/export.py      CSV для кнопок «Скачати» (формат під український Excel)
 firecal/regions.py     зони інтересу: області (сітка firecal/oblasts.npz), групи, прифронтові
 scripts/               генератор тестових даних, smoke-тест додатку
 tests/                 pytest
@@ -116,5 +117,7 @@ data/raw/              сирі CSV (не в git)
   `shift=N`, а не `end + N` (інакше на межі року в «історію» потрапляє майбутнє самої дати).
 - Раннє попередження (`analytics.early_warning`): останні N днів проти тих самих днів у ІНШІ роки.
   Добрі приклади для демо: Полісся 10.04.2020 (Чорнобиль) і Україна 20.03.2015 — 🔴.
+- Кнопки «Скачати CSV» — лише через `export.to_excel_csv` (`;`, десяткова кома, BOM): звичайний
+  `to_csv()` український Excel відкриває однією колонкою. Назад у pandas: `read_csv(sep=";", decimal=",")`.
 - Залежності — у локальному `.venv` (`python -m venv .venv`, потім
   `.venv/Scripts/python -m pip install -r requirements.txt`); системний Python їх не має.
