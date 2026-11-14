@@ -98,7 +98,8 @@ def _scale_rgba(t: np.ndarray) -> np.ndarray:
     return out
 
 
-def smooth_image(agg: pd.DataFrame, cell_deg: float, upsample: int = 4, sigma_cells: float = 0.8) -> dict:
+def smooth_image(agg: pd.DataFrame, cell_deg: float, upsample: int = 4, sigma_cells: float = 0.8,
+                 cap: float | None = None) -> dict:
     """Дні горіння клітинок -> плавна картинка PNG для накладання на карту.
 
     Кроки:
@@ -138,7 +139,9 @@ def smooth_image(agg: pd.DataFrame, cell_deg: float, upsample: int = 4, sigma_ce
     fine = fine[rows]
 
     # Верх шкали — 99-й перцентиль серед місць, де щось горіло (розмиття знижує піки, тож рахуємо після)
-    cap = color_cap(pd.Series(fine[fine > 0.5].ravel()))
+    # cap можна передати ззовні: тоді дві картинки (згладжена й різка) ділять одну шкалу кольорів.
+    if cap is None:
+        cap = color_cap(pd.Series(fine[fine > 0.5].ravel()))
     img = Image.fromarray(_scale_rgba(np.clip(fine / cap, 0, 1)), mode="RGBA")
     buf = io.BytesIO()
     img.save(buf, format="PNG")

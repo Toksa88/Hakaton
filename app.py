@@ -421,6 +421,10 @@ with tab_map:
         # Плавна картинка «де горить найчастіше», розмита в градусах, а не в пікселях (див. mapgrid.py).
         # НЕ density_map: та додає плями, що накладаються, і при віддаленні заливає червоним усю країну.
         smooth = mapgrid.smooth_image(agg, cell_deg)
+        # Друга, різкіша картинка для великого наближення: розмиття мале, тож клітинки видно як клітинки,
+        # а не як пляму розміром з місто. cap беремо від першої, щоб кольори збігались.
+        sharp = mapgrid.smooth_image(agg, cell_deg, upsample=6, sigma_cells=0.35, cap=smooth["cap"])
+        ZOOM_SWITCH = 8  # з цього зуму показуємо різку картинку (7.5-9: підбери на око)
         # choropleth_map — квадрати клітинок. Їх робимо НЕВИДИМИМИ (marker_opacity=0 нижче): вони потрібні
         # лише для підказки при наведенні (точне число клітинки) і для шкали кольорів праворуч.
         fig = px.choropleth_map(
@@ -442,8 +446,13 @@ with tab_map:
         # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
         fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
                           coloraxis_colorbar_title_text="днів горіння<br>(згладжено)",
-                          map_layers=[dict(sourcetype="image", source=smooth["source"],
-                                           coordinates=smooth["coordinates"], below="traces")])
+                          map_layers=[
+                              # Згладжена: видима до зуму ZOOM_SWITCH (maxzoom: на ньому й вище шар ховається)
+                              dict(sourcetype="image", source=smooth["source"],
+                                   coordinates=smooth["coordinates"], below="traces", maxzoom=ZOOM_SWITCH),
+                              # Різка: видима від зуму ZOOM_SWITCH (minzoom: нижче шар схований)
+                              dict(sourcetype="image", source=sharp["source"],
+                                   coordinates=sharp["coordinates"], below="traces", minzoom=ZOOM_SWITCH)])
         st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
