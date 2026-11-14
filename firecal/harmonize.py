@@ -201,10 +201,13 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nomina
     viirs = points.loc[points["sensor"] == "VIIRS", "date"]
     viirs_start = viirs.min() if not viirs.empty else None
 
-    # Повний період даних: від 1 січня першого року до 31 грудня останнього.
+    # Повний період даних: від ПЕРШОГО до ОСТАННЬОГО дня, за який є хоч якісь знімки (усі зони разом).
     # На ньому рахуємо денні суми і k — незалежно від слайдера.
-    full_start = pd.Timestamp(points["date"].min().year, 1, 1)
-    full_end = pd.Timestamp(points["date"].max().year, 12, 31)
+    # Не розтягуємо до 1 січня / 31 грудня (виправлений баг): дні, яких ще немає в даних
+    # (напр. кінець поточного року), ставали "нулями", і раннє попередження на 31.12
+    # показувало "0 пожеж, рівень низький", хоча насправді там просто ще немає знімків.
+    full_start = points["date"].min().normalize()  # normalize() — відкидає час, лишає саму дату
+    full_end = points["date"].max().normalize()
 
     # Фільтр БЕЗ start/end — беремо всі роки зони
     p_all = filter_points(points, bbox=bbox, min_conf=min_conf, oblasts=oblasts, exclude_war=exclude_war)
