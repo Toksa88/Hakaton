@@ -151,6 +151,9 @@ cell_deg = st.sidebar.select_slider("Розмір клітинки сітки, �
 if any(n.startswith("SAMPLE") for n in [f.name for f in load.RAW_DIR.glob("*.csv")]) and not from_upload:
     st.sidebar.error("⚠️ Зараз показано СИНТЕТИЧНІ тестові дані. Замініть їх справжніми з FIRMS.")
 
+# Роки для підписів: "2020", а не "2020–2020", якщо рік один
+years_label = str(years[0]) if years[0] == years[1] else f"{years[0]}–{years[1]}"
+
 # Перетворюємо вибрані роки в дати: з 1 січня першого року до 31 грудня останнього
 start, end = pd.Timestamp(years[0], 1, 1), pd.Timestamp(years[1], 12, 31)
 # Запускаємо обробку (з кешу, якщо параметри не змінились)
@@ -163,7 +166,7 @@ pts, cells, daily, activity, k, viirs_start = run_pipeline(
 # =====================================================================
 st.title(f"Календар активності горіння — {region}")
 # Один рядок-підсумок: що саме показано. Видно на всіх вкладках, не відкриваючи бічне меню.
-st.caption(f"📍 Зона: **{region}** · 📆 Роки: **{years[0]}–{years[1]}** · "
+st.caption(f"📍 Зона: **{region}** · 📆 Роки: **{years_label}** · "
            f"🔥 Достовірність: від **{min_conf}** · клітинка **{cell_deg}°**"
            + (" · без прифронтових областей з 24.02.2022" if exclude_war else ""))
 clim = analytics.climatology(activity)        # "норма" для кожного тижня року
@@ -224,11 +227,14 @@ with tab_cal:
         colorscale="YlOrRd", zmin=0, zmax=zmax,
         xgap=2, ygap=2,  # 2 пікселі між клітинками
         colorbar=dict(title="Активність"),
+        # hoverongaps=False — без підказки над порожніми клітинками (неповні тижні краю даних),
+        # інакше там видно "Рік 2025, тиждень 50: " без числа
+        hoverongaps=False,
         hovertemplate="Рік %{y}, " + ("%{x}" if freq == "Місяць" else "тиждень %{x}") + ": %{z:,.0f}<extra></extra>",
     ))
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
     fig.update_layout(
-        title=f"Активність горіння по {'місяцях' if freq == 'Місяць' else 'тижнях'}, {years[0]}–{years[1]}",
+        title=f"Активність горіння по {'місяцях' if freq == 'Місяць' else 'тижнях'}, {years_label}",
         xaxis_title="Місяць" if freq == "Місяць" else "Тиждень року", yaxis_title="Рік",
         separators=", ",  # як в Україні: 12 345,6 (так само зроблено на графіку аномалій)
         height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=50, b=0))
@@ -358,7 +364,7 @@ with tab_anom:
     yearly = activity.groupby(activity.index.year).sum()  # групуємо дні за роком і сумуємо
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Активність за рік"),
                  color=yearly.values, color_continuous_scale="YlOrRd",
-                 title=f"Активність за рік, {years[0]}–{years[1]}")
+                 title=f"Активність за рік, {years_label}")
     fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="медіана")
     # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
     fig.update_layout(height=320, margin=dict(l=0, r=0, t=50, b=0), coloraxis_showscale=False,
@@ -402,7 +408,7 @@ with tab_anom:
             file_name="anomalies.csv",
             mime="text/csv",
             key="dl_anomalies",
-            )
+        )
 
 # =====================================================================
 # 4. КАРТА — де горить найчастіше (теплова карта щільності)
@@ -445,7 +451,8 @@ with tab_map:
         # map.layers — додаткові шари карти: наша картинка, натягнута на свої 4 кути.
         # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
         fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
-                          coloraxis_colorbar_title_text="днів горіння<br>(згладжено)",
+                          # Без "(згладжено)": з зуму ZOOM_SWITCH видно різку картинку, а шкала в обох та сама (спільний cap)
+                          coloraxis_colorbar_title_text="днів горіння",
                           map_layers=[
                               # Згладжена: видима до зуму ZOOM_SWITCH (maxzoom: на ньому й вище шар ховається)
                               dict(sourcetype="image", source=smooth["source"],
