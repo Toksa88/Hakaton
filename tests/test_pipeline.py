@@ -218,6 +218,42 @@ def test_excel_csv_semicolon_decimal_comma_bom():
     assert text.splitlines() == ["рік;активність", "2020;12,5"]
 
 
+def test_map_cells_are_squares_with_true_counts():
+    # Карта: кожна клітинка — квадрат розміром із клітинку, колір = справжня кількість днів
+    # (без додавання сусідів, як було з density_map). Фільтр місяців працює.
+    from firecal import mapgrid
+    cells = pd.DataFrame({
+        "lat": [50.05, 50.05, 50.05, 50.15],
+        "lon": [30.05, 30.05, 30.05, 30.05],
+        "date": pd.to_datetime(["2020-04-01", "2020-04-02", "2020-08-01", "2020-04-01"]),
+    })
+    agg = mapgrid.burn_days(cells, months=[4])           # лише квітень
+    assert agg.set_index("id")["днів горіння"].to_dict() == {"50.05_30.05": 2, "50.15_30.05": 1}
+    gj = mapgrid.cells_geojson(agg, cell_deg=0.1)
+    ring = gj["features"][0]["geometry"]["coordinates"][0]
+    assert len(gj["features"]) == 2
+    assert ring[0] == ring[-1]                           # контур замкнений
+    assert abs((ring[1][0] - ring[0][0]) - 0.1) < 1e-9   # ширина квадрата = клітинка 0.1°
+    assert mapgrid.color_cap(pd.Series([1] * 99 + [1000])) < 1000  # викид не розтягує шкалу
+
+
+def test_map_smooth_image_corners_and_transparency():
+    # Плавна картинка: кути — по межах сітки з запасом, гаряча клітинка яскрава, далеко від неї прозоро.
+    import base64
+    import io
+    import numpy as np
+    from PIL import Image
+    from firecal import mapgrid
+    agg = pd.DataFrame({"lat": [50.05, 48.05], "lon": [30.05, 35.05], "днів горіння": [100, 100]})
+    out = mapgrid.smooth_image(agg, cell_deg=0.1)
+    (lon_w, lat_n), _, (lon_e, lat_s), _ = out["coordinates"]
+    assert lon_w < 30.0 and lon_e > 35.1 and lat_s < 48.0 and lat_n > 50.1   # обидві клітинки всередині
+    png = base64.b64decode(out["source"].split(",", 1)[1])
+    alpha = np.array(Image.open(io.BytesIO(png)))[..., 3]
+    assert alpha.max() > 200        # центр гарячої клітинки — майже непрозорий
+    assert alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 0   # посередині між ними — прозоро
+
+
 def test_calendar_export_headers_and_excel_formatting():
     # Тижні підписуються датою першого дня, роки — колонкою "рік";
     # у .xlsx заголовки закріплені, а на числах є кольорова шкала.

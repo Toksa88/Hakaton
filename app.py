@@ -27,7 +27,7 @@ import plotly.graph_objects as go   # "ручні" графіки, коли тр
 import streamlit as st              # веб-інтерфейс
 
 # Наш власний код із папки firecal/ (див. опис структури вище)
-from firecal import analytics, export, harmonize, load, regions
+from firecal import analytics, export, harmonize, load, mapgrid, regions
 
 # Налаштування сторінки: назва вкладки браузера, іконка, широкий макет. Має бути ПЕРШИМ st-викликом.
 st.set_page_config(page_title="Календар горіння", page_icon="🔥", layout="wide")
@@ -376,17 +376,34 @@ with tab_map:
         # Вибір місяців: format_func показує "Січ" замість 1
         months = st.multiselect("Місяці", list(range(1, 13)), default=list(range(1, 13)),
                                 format_func=lambda m: MONTHS[m - 1])
-        cm = cells[cells["date"].dt.month.isin(months)]  # лишаємо лише вибрані місяці
-        # Для кожної клітинки рахуємо, скільки днів вона горіла (.size() = кількість рядків у групі)
-        agg = cm.groupby(["lat", "lon"], as_index=False).size().rename(columns={"size": "днів горіння"})
-        # density_map — "розмита" теплова карта на підкладці OpenStreetMap/Carto (потрібен інтернет)
-        fig = px.density_map(agg, lat="lat", lon="lon", z="днів горіння", radius=12,
-                             center=dict(lat=(map_box[1] + map_box[3]) / 2, lon=(map_box[0] + map_box[2]) / 2),  # центр зони
-                             # чим ширша зона (у градусах довготи), тим дальше "відсуваємо" карту
-                             zoom=5 if map_box[2] - map_box[0] > 9 else 6 if map_box[2] - map_box[0] > 4 else 7,
-                             map_style="carto-positron",
-                             color_continuous_scale="YlOrRd")
-        fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0))
+        # Скільки днів горіла кожна клітинка у вибрані місяці (деталі й «чому квадрати» — у firecal/mapgrid.py)
+        agg = mapgrid.burn_days(cells, months)
+        # Плавна картинка «де горить найчастіше», розмита в градусах, а не в пікселях (див. mapgrid.py).
+        # НЕ density_map: та додає плями, що накладаються, і при віддаленні заливає червоним усю країну.
+        smooth = mapgrid.smooth_image(agg, cell_deg)
+        # choropleth_map — квадрати клітинок. Їх робимо НЕВИДИМИМИ (marker_opacity=0 нижче): вони потрібні
+        # лише для підказки при наведенні (точне число клітинки) і для шкали кольорів праворуч.
+        fig = px.choropleth_map(
+            agg, geojson=mapgrid.cells_geojson(agg, cell_deg), locations="id", color="днів горіння",
+            range_color=(0, smooth["cap"]),  # та сама шкала, що й у картинки
+            # FADE_SCALE: тихі місця прозорі, видно лише гарячі (пояснення — у mapgrid.py)
+            color_continuous_scale=mapgrid.FADE_SCALE,
+            center=dict(lat=(map_box[1] + map_box[3]) / 2, lon=(map_box[0] + map_box[2]) / 2),  # центр зони
+            # чим ширша зона (у градусах довготи), тим дальше "відсуваємо" карту
+            zoom=5 if map_box[2] - map_box[0] > 9 else 6 if map_box[2] - map_box[0] > 4 else 7,
+            map_style="carto-positron",
+        )
+        # marker_line_width=0 — без контурів квадратів (інакше сітка ліній забиває кольори);
+        # hovertemplate — підказка: дні горіння і центр клітинки замість технічного id
+        fig.update_traces(marker_line_width=0, marker_opacity=0, customdata=agg[["lat", "lon"]],
+                          hovertemplate="%{z} днів горіння<br>%{customdata[0]:.2f}° пн. ш., "
+                                        "%{customdata[1]:.2f}° сх. д.<extra></extra>")
+        # map.layers — додаткові шари карти: наша картинка, натягнута на свої 4 кути.
+        # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
+        fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
+                          coloraxis_colorbar_title_text="днів горіння<br>(згладжено)",
+                          map_layers=[dict(sourcetype="image", source=smooth["source"],
+                                           coordinates=smooth["coordinates"], below="traces")])
         st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
