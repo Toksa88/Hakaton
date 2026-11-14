@@ -252,3 +252,41 @@ def test_map_smooth_image_corners_and_transparency():
     alpha = np.array(Image.open(io.BytesIO(png)))[..., 3]
     assert alpha.max() > 200        # центр гарячої клітинки — майже непрозорий
     assert alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 0   # посередині між ними — прозоро
+
+
+def test_calendar_export_headers_and_excel_formatting():
+    # Тижні підписуються датою першого дня, роки — колонкою "рік";
+    # у .xlsx заголовки закріплені, а на числах є кольорова шкала.
+    import io
+    import openpyxl
+    from firecal import export
+    mat = pd.DataFrame([[1.25, 0.0], [3.0, 7.5]], index=[2020, 2021], columns=[1, 14])
+    out = export.calendar_for_export(mat, "week", months=[])
+    assert list(out.columns) == ["01.01", "02.04"]   # тиждень 14 = 1 січня + 13*7 днів = 2 квітня
+    assert out.index.name == "рік"
+    wb = openpyxl.load_workbook(io.BytesIO(export.to_excel(out, index=True, heatmap=True)))
+    ws = wb.active
+    assert ws["A1"].value == "рік" and ws["B1"].value == "01.01"
+    assert ws.freeze_panes == "B2"
+    assert ws["B2"].value == 1.2 and ws["B2"].number_format == "0.0"
+    assert len(ws.conditional_formatting) == 1
+
+
+def test_excel_header_block_above_table():
+    # Шапка (заголовок + параметри) стоїть над таблицею, а заголовки таблиці й закріплення
+    # зсуваються під неї. Підсумки календаря рахуються правильно.
+    import io
+    import openpyxl
+    from firecal import export
+    mat = pd.DataFrame([[1.0, 9.0], [2.0, 2.0]], index=pd.Index([2020, 2021], name="рік"), columns=[1, 14])
+    summary = export.calendar_summary(mat, ["01.01", "02.04"])
+    assert summary["Найактивніший рік"] == "2020 (10)"   # 1 + 9
+    assert summary["Найтихіший рік"] == "2021 (4)"      # 2 + 2
+    assert summary["Пік сезону (в середньому)"] == "02.04"  # середнє (9+2)/2 > (1+2)/2
+    raw = export.to_excel(mat, index=True, heatmap=True, title="Календар", info={"Зона": "Україна", **summary})
+    ws = openpyxl.load_workbook(io.BytesIO(raw)).active
+    assert ws["A1"].value == "Календар"
+    assert ws["A2"].value == "Зона" and ws["B2"].value == "Україна"
+    # 1 заголовок + 5 параметрів + 1 порожній рядок = 7 рядків шапки, таблиця — з 8-го
+    assert ws["A8"].value == "рік" and ws["A9"].value == 2020
+    assert ws.freeze_panes == "B9"
