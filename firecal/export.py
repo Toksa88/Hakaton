@@ -50,8 +50,9 @@ def calendar_summary(mat: pd.DataFrame, labels: list[str]) -> dict[str, str]:
     by_col = mat.mean(axis=0)            # axis=0: середнє ВЗДОВЖ стовпця -> «норма» кожного тижня/місяця
     peak = labels[list(mat.columns).index(by_col.idxmax())]  # idxmax — стовпець з найбільшим середнім
     return {
-        "Разом за всі роки": f"{by_year.sum():,.0f}".replace(",", " "),
-        "Найактивніший рік": f"{by_year.idxmax()} ({by_year.max():,.0f})".replace(",", " "),
+        # Слова — ті самі, що на екрані («осередки», «найгарячіший рік»), див. firecal/words.py
+        "Осередків горіння за всі роки": f"{by_year.sum():,.0f}".replace(",", " "),
+        "Найгарячіший рік": f"{by_year.idxmax()} ({by_year.max():,.0f})".replace(",", " "),
         "Найтихіший рік": f"{by_year.idxmin()} ({by_year.min():,.0f})".replace(",", " "),
         "Пік сезону (в середньому)": str(peak),
     }
