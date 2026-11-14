@@ -203,11 +203,13 @@ pts, cells, daily, activity, k, viirs_start = run_pipeline(
 st.markdown("""
 <style>
 /* Менше порожнього місця згори сторінки */
-[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; }
-/* Банер-заголовок */
+/* 3.5rem — щоб банер не підлазив під верхню панель Streamlit (меню ⋮) */
+[data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
+/* Банер-заголовок. Градієнт НЕ згасає до нуля, а рамка достатньо помітна: інакше в світлій темі
+   верх і правий край банера зливаються з білим фоном і плашка виглядає «обрізаною». */
 .hero { padding: 18px 22px; border-radius: 14px; margin-bottom: 6px;
-        background: linear-gradient(110deg, rgba(249,115,22,.18), rgba(220,38,38,.10) 55%, rgba(249,115,22,0) 90%);
-        border: 1px solid rgba(249,115,22,.25); }
+        background: linear-gradient(110deg, rgba(249,115,22,.20), rgba(220,38,38,.10) 60%, rgba(249,115,22,.06));
+        border: 1px solid rgba(249,115,22,.45); }
 .hero-kicker { font-size: .85rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; opacity: .75; }
 .hero-title { font-size: 2.1rem; font-weight: 700; line-height: 1.15; margin: 2px 0 4px; }
 .hero-title small { font-size: 1rem; font-weight: 500; opacity: .7; }
