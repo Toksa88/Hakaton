@@ -162,6 +162,10 @@ pts, cells, daily, activity, k, viirs_start = run_pipeline(
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
 # =====================================================================
 st.title(f"Календар активності горіння — {region}")
+# Один рядок-підсумок: що саме показано. Видно на всіх вкладках, не відкриваючи бічне меню.
+st.caption(f"📍 Зона: **{region}** · 📆 Роки: **{years[0]}–{years[1]}** · "
+           f"🔥 Достовірність: від **{min_conf}** · клітинка **{cell_deg}°**"
+           + (" · без прифронтових областей з 24.02.2022" if exclude_war else ""))
 clim = analytics.climatology(activity)        # "норма" для кожного тижня року
 anom = analytics.anomalies(activity)          # тижні, що сильно відхиляються від норми
 crit = analytics.critical_periods(activity)   # найактивніші періоди року
