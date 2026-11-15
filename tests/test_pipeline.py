@@ -353,3 +353,18 @@ def test_smooth_image_uses_given_cap():
     agg = pd.DataFrame({"lat": [50.05], "lon": [30.05], "днів горіння": [10]})
     out = mapgrid.smooth_image(agg, 0.1, cap=123.0)
     assert out["cap"] == 123.0
+
+
+def test_deploy_file_used_only_without_csv(tmp_path, monkeypatch):
+    """На сервері немає CSV — читаємо готовий parquet; є свої CSV — вони важливіші."""
+    m = load.normalize(_modis([(50, 30, 320, "2020-04-01", 1000, 60, 5, 0)]))
+    deploy = tmp_path / "deploy.parquet"
+    m.to_parquet(deploy, index=False)
+    monkeypatch.setattr(load, "DEPLOY_FILE", deploy)
+    monkeypatch.setattr(load, "CACHE_DIR", tmp_path / "cache")
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    assert len(load.load_cached(raw)) == 1          # CSV нема -> дані з deploy-файлу
+    _modis([(48, 35, 320, "2021-05-01", 1000, 60, 5, 0), (48, 36, 320, "2021-05-01", 1000, 60, 5, 0)]).to_csv(
+        raw / "modis.csv", index=False)
+    assert len(load.load_cached(raw)) == 2          # є CSV -> deploy-файл ігнорується
