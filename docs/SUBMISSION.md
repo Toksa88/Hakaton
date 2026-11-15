@@ -22,11 +22,14 @@ compared fairly. It shows when fires usually happen, which weeks were unusual, t
 periods of the year, and an early-warning level for any date.
 
 ### Demo link
-`TODO` — посилання на задеплоєний додаток (Streamlit Community Cloud).
+https://fire.metalgearbot.fun
+
+(Наш VPS, HTTPS, перемикач мови Українська / English угорі бічної панелі. Як оновлювати — `docs/DEPLOY.md`.)
 
 ### Final project link
-`TODO` — https://github.com/Toksa88/Hakaton (репо зараз ПРИВАТНЕ: перед здачею зробити публічним,
-спершу перевіривши на секрети) або посилання на презентацію/відео.
+https://github.com/Toksa88/Hakaton
+
+(Репо публічне. Перевірено 15.11: у всій історії git немає ключів і токенів, `.env`/`secrets.toml` не в git.)
 
 ### Detailed description
 **The problem.** MODIS (1 km pixels, since 2000) and VIIRS (375 m pixels, since 2012) see a very

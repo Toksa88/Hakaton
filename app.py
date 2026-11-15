@@ -244,7 +244,14 @@ st.sidebar.button(T("↺ Скинути налаштування", "↺ Reset se
 
 # Завантаження власних CSV — у «Додатково»: на демо ним рідко користуються
 files = adv.file_uploader(T("Свої дані FIRMS (CSV, MODIS і/або VIIRS)", "Your own FIRMS data (CSV, MODIS and/or VIIRS)"),
-                          type="csv", accept_multiple_files=True)
+                          type="csv", accept_multiple_files=True,
+                          # Чесно кажемо людині, що буде з файлом (так і є: див. get_points і docs/DEPLOY.md)
+                          help=T("Файл не записується на диск і не видний іншим відвідувачам. Він обробляється в "
+                                 "пам'яті сервера; там тримаються лише 3 останні набори, і все зникає при "
+                                 "перезапуску. До 30 МБ на файл.",
+                                 "The file is not written to disk and other visitors cannot see it. It is processed "
+                                 "in server memory, which keeps only the last 3 data sets, and everything is gone "
+                                 "after a restart. Up to 30 MB per file."))
 # Перетворюємо файли в кортеж (ім'я, байти) — такий формат кеш уміє порівнювати
 uploaded = tuple((f.name, f.getvalue()) for f in files) if files else ()
 points, upload_errors, from_upload = get_points(uploaded)
