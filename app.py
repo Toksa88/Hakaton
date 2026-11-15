@@ -45,6 +45,14 @@ C_NORM = "#9ca3af"       # сірий — "зазвичай"
 C_ACCENT = "#dc2626"     # червоний — "зараз", критичне
 # Кольори рівнів тривоги для «світлофора» на вкладці «Раннє попередження»
 LEVEL_COLORS = {"низький": "#16a34a", "підвищений": "#eab308", "високий": "#f97316", "дуже високий": "#dc2626"}
+# Шкала «мало → багато» для календаря й стовпчиків по роках. Це YlOrRd з plotly, але без найсвітлішого
+# кольору #ffffcc: майже білі клітинки «виїдали» очі в світлій темі і світились на темній.
+# Низ — приглушений пісочний, далі ті самі кольори YlOrRd (пари [частка шкали 0..1, колір]).
+HEAT_SCALE = [[0.0, "#efdca6"], [0.15, "#fed976"], [0.3, "#feb24c"], [0.45, "#fd8d3c"],
+              [0.6, "#fc4e2a"], [0.75, "#e31a1c"], [0.88, "#bd0026"], [1.0, "#800026"]]
+# Підказка «?» біля кожної кнопки CSV: людям — Excel, CSV — для скриптів і програм
+CSV_HELP = ("Для читання очима краще «Скачати Excel». CSV — для програм і скриптів: роздільник «;», "
+            "десяткова кома (так його правильно відкриває український Excel).")
 
 
 # =====================================================================
@@ -105,6 +113,50 @@ st.sidebar.title("🔥 Календар горіння")
 main_box = st.sidebar.container()                         # основні налаштування
 adv = st.sidebar.expander("⚙️ Додатково", expanded=False)  # закритий блок
 
+
+# Початкові значення віджетів бічної панелі (за їхніми key). Значення віджетам даємо САМЕ звідси
+# (через session_state), а не параметром value=: так кнопка «Скинути налаштування» може їх повернути.
+SIDEBAR_DEFAULTS = {
+    "zone": list(regions.ZONES)[0],  # «Україна (вся)»
+    "lon0": 30.0, "lon1": 34.0, "lat0": 46.0, "lat1": 48.0,
+    "exclude_war": False,
+    "min_conf": "nominal",
+    "cell_deg": 0.1,
+}
+# setdefault — записати, лише якщо ключа ще нема (тобто при першому відкритті чи після скидання)
+for _k, _v in SIDEBAR_DEFAULTS.items():
+    st.session_state.setdefault(_k, _v)
+# Номер скидання: додаємо його до key віджетів на вкладках (див. tab_key). Новий номер = нові віджети,
+# і вони малюються з початковими значеннями.
+st.session_state.setdefault("reset_n", 0)
+
+
+def tab_key(name: str) -> str:
+    """Ключ віджета на вкладці з номером скидання: "cal_freq" -> "cal_freq_0", після скидання "cal_freq_1"."""
+    return f"{name}_{st.session_state['reset_n']}"
+
+
+def reset_settings() -> None:
+    """Кнопка «Скинути налаштування»: усе як при першому відкритті сайту (зручно на демо).
+
+    st.session_state — пам'ять віджетів між перезапусками скрипта. Виконується як on_click — ДО
+    перезапуску, тож сторінка одразу малюється зі скинутими значеннями.
+    Чому не просто st.session_state.clear(): тоді Python скидається, а віджет на екрані — ні
+    (перевірено: список зон і далі показував «Свої координати», хоча дані були вже по всій Україні).
+    Явно записане значення Streamlit на екрані оновлює. Завантажені файли кнопка не прибирає.
+    """
+    for k, v in SIDEBAR_DEFAULTS.items():
+        st.session_state[k] = v
+    st.session_state.pop("years", None)    # роки за замовчуванням поставить код біля слайдера
+    st.session_state.pop("ew_date", None)  # дата раннього попередження -> останній день у даних
+    st.session_state["reset_n"] += 1       # усі віджети на вкладках — з початковими значеннями
+
+
+# Кнопку створюємо тут, до будь-якого st.stop() нижче: навіть якщо людина ввела хибні координати,
+# скинути все одним кліком можна. На екрані вона стоїть під «Додатково».
+st.sidebar.button("↺ Скинути налаштування", on_click=reset_settings, width="stretch",
+                  help="Повернути зону, роки й усі інші налаштування до початкових.")
+
 # Завантаження власних CSV — у «Додатково»: на демо ним рідко користуються
 files = adv.file_uploader("Свої дані FIRMS (CSV, MODIS і/або VIIRS)", type="csv", accept_multiple_files=True)
 # Перетворюємо файли в кортеж (ім'я, байти) — такий формат кеш уміє порівнювати
@@ -122,18 +174,39 @@ if points.empty:
                "`python scripts/make_sample_data.py` для тестових даних.")
     st.stop()
 
-# Вибір зони: група областей, окрема область (справжні межі, regions.ZONES) або свій прямокутник
+# Вибір зони: група областей, окрема область (справжні межі, regions.ZONES) або свої координати
 # key="zone" — значення живе в st.session_state["zone"]: так кнопки-приклади на вкладці
 # «Раннє попередження» можуть самі перемкнути зону (див. set_example нижче)
-region = main_box.selectbox("Зона інтересу", list(regions.ZONES) + ["Свій прямокутник"], key="zone",
-                            help="Межі областей — справжні (з точністю ~1 км), а не прямокутники.")
+CUSTOM_ZONE = "Свої координати"  # пункт меню «зона = прямокутник з довготи/широти, які ввела людина»
+region = main_box.selectbox("Зона інтересу", list(regions.ZONES) + [CUSTOM_ZONE], key="zone",
+                            help="Дані — лише по Україні. Межі областей — справжні (з точністю ~1 км), "
+                                 "а не прямокутники.")
 oblasts = None  # None = без фільтра за областями
-if region == "Свій прямокутник":
+if region == CUSTOM_ZONE:
     c1, c2 = main_box.columns(2)  # дві колонки поруч: "від" і "до"
-    lon0 = c1.number_input("Довгота від", value=30.0)
-    lon1 = c2.number_input("Довгота до", value=34.0)
-    lat0 = c1.number_input("Широта від", value=46.0)
-    lat1 = c2.number_input("Широта до", value=48.0)
+    # step=0.5 — на скільки змінюють кнопки «+/−»; від'ємні значення дозволені.
+    # min_value/max_value НЕ ставимо: тоді Streamlit сам показує англійське «Number is outside the
+    # allowed range». Межі перевіряємо нижче самі — з поясненням українською.
+    lon0 = c1.number_input("Довгота від", step=0.5, key="lon0")
+    lon1 = c2.number_input("Довгота до", step=0.5, key="lon1")
+    lat0 = c1.number_input("Широта від", step=0.5, key="lat0")
+    lat1 = c2.number_input("Широта до", step=0.5, key="lat1")
+    main_box.caption("Україна — це приблизно довгота 22–40, широта 44–52.")
+    # Перевірка координат. Якщо щось не так — показуємо, що саме, і зупиняємо скрипт: усі вкладки
+    # без зони все одно порожні (st.stop тут, ДО вкладок, — безпечно). Без цих меж 10-значне число
+    # відправляло центр карти в нікуди і браузер зависав (баг-звіт #21).
+    problems = []  # список зрозумілих людині описів помилок
+    if not (-180 <= lon0 <= 180 and -180 <= lon1 <= 180):
+        problems.append("довгота має бути від −180 до 180")
+    if not (-90 <= lat0 <= 90 and -90 <= lat1 <= 90):
+        problems.append("широта має бути від −90 до 90")
+    if lon0 >= lon1:
+        problems.append("«Довгота від» має бути менше за «Довгота до»")
+    if lat0 >= lat1:
+        problems.append("«Широта від» має бути менше за «Широта до»")
+    if problems:
+        st.error("**Перевірте координати:** " + "; ".join(problems) + ".")
+        st.stop()
     bbox = (lon0, lat0, lon1, lat1)  # bbox = "bounding box", прямокутник (захід, південь, схід, північ)
     map_box = bbox
 else:
@@ -144,7 +217,7 @@ else:
 # Перемикач "без зони бойових дій": з 24.02.2022 у прифронтових областях багато хот-спотів
 # від обстрілів, а не від с/г палів — вони спотворюють календар і аномалії
 exclude_war = main_box.checkbox(
-    "Без прифронтових областей з 24.02.2022",
+    "Без прифронтових областей з 24.02.2022", key="exclude_war",
     help="Викидає точки з областей " + ", ".join(regions.FRONTLINE) + " після початку повномасштабної "
          "війни: там багато хот-спотів від обстрілів, а не від пожеж рослинності.")
 
@@ -170,12 +243,12 @@ else:
                                  "за замовчуванням вимкнені, бо виглядають як провал.")
 # Достовірність точок: low пропускає все, high — лише найнадійніші. На екрані — українські слова
 # (format_func показує "середня" замість "nominal"), а в код повертається технічне значення.
-min_conf = adv.select_slider("Достовірність точок, не нижче", ["low", "nominal", "high"], value="nominal",
+min_conf = adv.select_slider("Достовірність точок, не нижче", ["low", "nominal", "high"], key="min_conf",
                              format_func=words.CONF_LABELS.get,
                              help="Супутник позначає кожну точку: низька / середня / висока достовірність. "
                                   "«Середня» відкидає найсумнівніші точки (науково: low / nominal / high).")
 # Розмір ділянки сітки в градусах (0.1° ≈ 8×11 км в Україні). Менше = детальніше, але шумніше.
-cell_deg = adv.select_slider("Розмір ділянки сітки", [0.05, 0.1, 0.25, 0.5], value=0.1,
+cell_deg = adv.select_slider("Розмір ділянки сітки", [0.05, 0.1, 0.25, 0.5], key="cell_deg",
                              format_func=words.CELL_LABELS.get,
                              help="Точки супутників збираємо в ділянки цього розміру. Одна ділянка, де за день "
                                   "був вогонь, — це один «осередок горіння». Менше — детальніше, але шумніше.")
@@ -193,6 +266,25 @@ start, end = pd.Timestamp(years[0], 1, 1), pd.Timestamp(years[1], 12, 31)
 # tuple(oblasts) — кеш Streamlit краще працює з кортежами, ніж зі списками
 pts, cells, daily, activity, k, viirs_start = run_pipeline(
     points, bbox, start, end, min_conf, cell_deg, tuple(oblasts) if oblasts else None, exclude_war)
+
+# Після фільтрів не лишилось жодної точки — показуємо ОДНЕ зрозуміле повідомлення замість порожніх
+# вкладок. Інакше раннє попередження писало зелене «🟢 низький рівень», хоча насправді даних немає:
+# «пожеж нема» і «ми туди не дивились» — різні речі. st.stop() тут, ДО вкладок, — безпечно.
+if pts.empty:
+    # Чи перетинається прямокутник людини з місцем, де взагалі є наші дані?
+    outside = bbox is not None and (bbox[2] < points["lon"].min() or bbox[0] > points["lon"].max()
+                                    or bbox[3] < points["lat"].min() or bbox[1] > points["lat"].max())
+    if outside:
+        st.warning("**У цій зоні немає даних.** Наші дані покривають лише Україну (приблизно довгота 22–40, "
+                   "широта 44–52) — тут «немає пожеж» означало б «ми туди не дивились». Змініть координати.")
+    else:
+        st.warning("**Після фільтрів не лишилось жодної точки.** Спробуйте більше років, більшу зону "
+                   "або нижчу достовірність у «⚙️ Додатково».")
+    st.stop()
+if bbox is not None:
+    # Свої координати можуть бути набагато ширші за Україну (напр. вся Європа) — центруємо карту
+    # не на прямокутнику людини, а на пожежах, що в нього потрапили
+    map_box = (pts["lon"].min(), pts["lat"].min(), pts["lon"].max(), pts["lat"].max())
 
 # =====================================================================
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
@@ -218,8 +310,20 @@ st.markdown("""
 [data-testid="stMetric"] { background: rgba(249,115,22,.06); border: 1px solid rgba(249,115,22,.22);
                            border-radius: 12px; padding: 12px 16px; }
 /* Вкладки — трохи більший шрифт, щоб їх помічали */
-button[data-baseweb="tab"] p { font-size: 1rem; font-weight: 500; }
+[data-baseweb="tab"] p { font-size: 1rem; font-weight: 500; }
 @media (max-width: 640px) { .hero-title { font-size: 1.5rem; } }
+/* Меню ⋮ — вбудоване в Streamlit, англійською, і перекласти його налаштуванням не можна.
+   Тому: «Record screen» ховаємо (для журі зайве), а інші підписи підміняємо: справжній текст робимо
+   нульового розміру (font-size: 0), а поруч CSS малює свій (::after з content). Іконкам повертаємо розмір. */
+[data-testid="stMainMenuItem-recordScreencast"] { display: none !important; }
+[data-testid^="stMainMenuItem-theme-"] { font-size: 0 !important; }
+[data-testid^="stMainMenuItem-theme-"] [data-testid="stIconMaterial"] { font-size: 1.25rem; }
+[data-testid^="stMainMenuItem-theme-"]::after { font-size: .75rem; }
+[data-testid="stMainMenuItem-theme-System"]::after { content: "Як у системі"; }
+[data-testid="stMainMenuItem-theme-Light"]::after { content: "Світла"; }
+[data-testid="stMainMenuItem-theme-Dark"]::after { content: "Темна"; }
+[data-testid="stMainMenuItem-print"] [data-testid="stMainMenuItemLabel"] { font-size: 0; }
+[data-testid="stMainMenuItem-print"] [data-testid="stMainMenuItemLabel"]::after { content: "Друк"; font-size: .875rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -275,7 +379,7 @@ def how_to_read(main: str, rest: str = "", details: str | None = None) -> None:
 # має бачити, звідки ці цифри. Словник зберігає порядок, у якому ми додаємо пари.
 # Слова — як на екрані, а науковий термін чи технічне значення — у дужках (правило: Excel для людей).
 export_info = {
-    "Зона": region if region != "Свій прямокутник" else f"прямокутник: довгота {bbox[0]}–{bbox[2]}, широта {bbox[1]}–{bbox[3]}",
+    "Зона": region if region != CUSTOM_ZONE else f"свої координати: довгота {bbox[0]}–{bbox[2]}, широта {bbox[1]}–{bbox[3]}",
     "Роки": years_label,
     "Достовірність точок": f"{words.CONF_LABELS[min_conf]} і вище ({min_conf})",
     "Розмір ділянки сітки": f"{words.CELL_LABELS[cell_deg]} ({cell_deg}°)",
@@ -307,9 +411,9 @@ with tab_cal:
         "Лише MODIS (з 2000)": ("modis", daily["modis"]),
         "Лише VIIRS (з 2012)": ("viirs", daily["viirs"]),
     }
-    series_name = c2.radio("Дані", list(SERIES),
+    series_name = c2.radio("Дані", list(SERIES), key=tab_key("cal_series"),
                            help="Перемкніть на один супутник, щоб побачити, чому без узгодження роки непорівнянні")
-    freq = c2.radio("Крок", ["Тиждень", "Місяць"])
+    freq = c2.radio("Крок", ["Тиждень", "Місяць"], key=tab_key("cal_freq"))
     series_code, series = SERIES[series_name]
     per = "за місяць" if freq == "Місяць" else "за тиждень"
     # Таблиця: рядки = роки, стовпці = тижні (або місяці), значення = осередки горіння
@@ -326,15 +430,22 @@ with tab_cal:
     else:
         # По X — номери тижнів, але підписуємо місяцями (людині «Кві» зрозуміліше за «тиждень 14»).
         # А в підказці — дата початку тижня: customdata — таблиця тих самих розмірів, що й z.
-        x, hover_when = list(mat.columns), "тиждень з %{customdata}"
-        custom = [[analytics.week_start(y, w).strftime("%d.%m") for w in mat.columns] for y in mat.index]
+        # У кожній клітинці customdata — пара [дата початку тижня, номер тижня]. Номер беремо звідси, а
+        # не через %{x}: на осі X підписи-місяці, і %{x} показав би «тиждень Лип» замість «тиждень 26».
+        x, hover_when = list(mat.columns), "тиждень %{customdata[1]} (з %{customdata[0]})"
+        custom = [[[analytics.week_start(y, w).strftime("%d.%m"), int(w)] for w in mat.columns] for y in mat.index]
     # go.Heatmap замість px.imshow, бо тільки він вміє xgap/ygap: проміжки між клітинками в пікселях
     fig = go.Figure(go.Heatmap(
         z=mat.values, x=x, customdata=custom,
         y=[str(y) for y in mat.index],  # перший рік знизу, як і було з origin="lower"
-        colorscale="YlOrRd", zmin=0, zmax=zmax,
+        colorscale=HEAT_SCALE, zmin=0, zmax=zmax,
         xgap=2, ygap=2,  # 2 пікселі між клітинками
-        colorbar=dict(title=f"Осередків<br>{per}", tickvals=tick_vals, ticktext=tick_text),
+        # Шкала кольорів — горизонтальна, ПІД графіком: вертикальна праворуч на телефоні забирала
+        # майже половину ширини, і тижні ставали тонкими рисками. yref="container" + y=0 — притиснута до
+        # самого низу полотна (у нижній відступ margin.b), тож не налазить на підписи місяців.
+        colorbar=dict(title=dict(text=f"Осередків {per}", side="top"), tickvals=tick_vals, ticktext=tick_text,
+                      orientation="h", yref="container", y=0, yanchor="bottom", thickness=12, len=0.8,
+                      ticklabeloverflow="allow"),
         # hoverongaps=False — без підказки над порожніми клітинками (неповні тижні краю даних),
         # інакше там видно "Рік 2025, тиждень 50: " без числа
         hoverongaps=False,
@@ -343,10 +454,11 @@ with tab_cal:
     ))
     # Висота залежить від кількості років, щоб рядки не були занадто тонкими.
     fig.update_layout(
-        title=f"Осередки горіння {per}, {years_label}",
+        title=dict(text=f"Осередки горіння {per}", subtitle_text=years_label),  # коротко: не обрізається на телефоні
         xaxis_title=None, yaxis_title=None,  # і так ясно: зліва роки, знизу місяці
         separators=", ",  # як в Україні: 12 345,6 (так само зроблено на графіку аномалій)
-        height=max(350, 22 * len(mat) + 120), margin=dict(l=0, r=0, t=50, b=0))
+        # +80 пікселів і нижній відступ — місце для підписів місяців і шкали під графіком
+        height=max(450, 22 * len(mat) + 220), margin=dict(l=0, r=0, t=70, b=90))
     if freq == "Тиждень":
         # Підписи осі X — назви місяців у тижнях, де місяць починається
         mt_weeks, mt_names = analytics.month_ticks()
@@ -354,6 +466,13 @@ with tab_cal:
     # type="category" — роки як підписи, а не числа: інакше при одному-двох роках plotly малює
     # на осі "2 019,6" і "2 020,4" (таке саме на інших графіках по роках нижче)
     fig.update_yaxes(type="category")
+    # Лінії-орієнтири під мишею (spikes): вертикальна до місяців унизу і горизонтальна до року зліва —
+    # так видно, який це тиждень і рік, навіть у середині великої таблиці (баг-звіт Макса, #21).
+    # spikemode="across" — лінія через увесь графік; spikesnap="cursor" — іде за мишею.
+    fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1,
+                     spikedash="solid", spikecolor=C_NORM)
+    fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikethickness=1,
+                     spikedash="solid", spikecolor=C_NORM)
     c1.plotly_chart(fig, width="stretch")
     # Вибрано один супутник — пояснюємо висновок словами, щоб людина не мусила здогадуватись сама
     if series_code != "harmonized":
@@ -391,7 +510,7 @@ with tab_cal:
         key="dl_calendar_xlsx",  # унікальні ключі, щоб кнопки не конфліктували між собою
     )
     c2.download_button(
-        "⬇️ Скачати CSV",
+        "⬇️ Скачати CSV (для програм)", help=CSV_HELP,
         data=export.to_excel_csv(mat_out, index=True),
         file_name=f"{fname}.csv",
         mime="text/csv",
@@ -440,7 +559,7 @@ with tab_warn:
     as_of = c1.date_input("Дата", value=default_day, min_value=first_day, max_value=last_day, format="DD.MM.YYYY",
                           help="За замовчуванням — останній день у даних. Можна вибрати будь-яку дату в минулому, "
                                "щоб подивитись, що показала б система тоді.")
-    window = c1.select_slider("Вікно, днів", [3, 7, 14, 30], value=7,
+    window = c1.select_slider("Вікно, днів", [3, 7, 14, 30], value=7, key=tab_key("ew_window"),
                               help="За скільки останніх днів рахуємо осередки горіння")
     ew = analytics.early_warning(activity, as_of, window=window)
     # Слайдер за замовчуванням ховає неповний останній рік, а "зараз" для служб попередження —
@@ -489,10 +608,13 @@ with tab_warn:
                                hovertemplate="%{x} — осередків: <b>%{y:,.0f}</b><extra></extra>"))
         fig.add_hline(y=ew["median"], line_dash="dot", annotation_text="зазвичай")
         fig.add_hline(y=ew["p90"], line_dash="dash", line_color=C_NORM, annotation_text="у 9 з 10 років нижче")
-        fig.update_layout(title=f"Ті самі {window} дн. ({ew['as_of'] - pd.Timedelta(days=window - 1):%d.%m}–"
-                                f"{ew['as_of']:%d.%m}) у кожному році — {ew['as_of'].year} червоним",
+        # Заголовок plotly не переноситься: довгий обрізався на телефоні. Тому коротко + subtitle
+        # (другий рядок меншим шрифтом). Так само на інших графіках з довгими назвами.
+        fig.update_layout(title=dict(text=f"Ті самі {window} дн. у кожному році",
+                                     subtitle_text=f"{ew['as_of'] - pd.Timedelta(days=window - 1):%d.%m}–"
+                                                   f"{ew['as_of']:%d.%m}; {ew['as_of'].year} — червоним"),
                           xaxis_type="category", separators=", ",
-                          yaxis_title="Осередків горіння", height=340, margin=dict(l=0, r=0, t=40, b=0))
+                          yaxis_title="Осередків горіння", height=360, margin=dict(l=0, r=0, t=70, b=0))
         st.plotly_chart(fig, width="stretch")
         st.caption("«Зазвичай» — по вибраних слайдером роках, крім року самої дати. "
                    "«Чого чекати» — як сезон зазвичай змінювався в ці тижні в минулі роки, а не прогноз погоди.")
@@ -527,8 +649,8 @@ with tab_crit:
                                       f"<b>{words.fmt_num(row['частка річного горіння, %'], 0)}%</b> горіння",
                       annotation_position="top left", annotation_font_size=11)
     mt_weeks, mt_names = analytics.month_ticks()
-    fig.update_layout(title="Звичайний рік: осередків горіння за тиждень", yaxis_title=None, height=420,
-                      separators=", ", margin=dict(l=0, r=0, t=70, b=0), legend=dict(orientation="h", y=-0.12),
+    fig.update_layout(title=dict(text="Звичайний рік по тижнях", subtitle_text="осередків горіння за тиждень"),
+                      yaxis_title=None, height=440, separators=", ", margin=dict(l=0, r=0, t=90, b=40), legend=dict(orientation="h", yref="container", y=0, yanchor="bottom"),
                       xaxis=dict(tickvals=mt_weeks, ticktext=mt_names, range=[0.5, 52.5]))
     st.plotly_chart(fig, width="stretch")
     # Таблиця — для тих, кому потрібні точні цифри; на екрані її заміняють смуги на графіку
@@ -552,7 +674,7 @@ with tab_anom:
     # Стовпчики "осередки за кожен рік" + пунктир медіани: видно аномальні роки цілком.
     # yearly — суми за роками, пораховані вище для шапки (analytics.yearly_totals)
     fig = px.bar(x=yearly.index, y=yearly.values, labels=dict(x="Рік", y="Осередків за рік"),
-                 color=yearly.values, color_continuous_scale="YlOrRd",
+                 color=yearly.values, color_continuous_scale=HEAT_SCALE,
                  title=f"Осередків горіння за рік, {years_label}")
     fig.add_hline(y=yearly.median(), line_dash="dot", annotation_text="звичайний рік (медіана)")
     # separators=", " — дробова частина через кому, тисячі через пробіл (12 345,6), як прийнято в Україні
@@ -609,7 +731,7 @@ with tab_anom:
             key="dl_anomalies_xlsx",
         )
         b2.download_button(
-            "⬇️ Скачати CSV",
+            "⬇️ Скачати CSV (для програм)", help=CSV_HELP,
             data=export.to_excel_csv(table),  # без зайвого стовпця з номерами рядків (index=False)
             file_name="anomalies.csv",
             mime="text/csv",
@@ -629,11 +751,11 @@ with tab_map:
     # Словник "назва кнопки -> список місяців"; None — "свої місяці", тоді показуємо звичайний вибір.
     SEASONS = {"Увесь рік": list(range(1, 13)), "Весна (бер–тра)": [3, 4, 5], "Літо (чер–сер)": [6, 7, 8],
                "Осінь (вер–лис)": [9, 10, 11], "Свої місяці…": None}
-    season = st.radio("Сезон", list(SEASONS), horizontal=True, label_visibility="collapsed")
+    season = st.radio("Сезон", list(SEASONS), horizontal=True, label_visibility="collapsed", key=tab_key("map_season"))
     months = SEASONS[season]
     if months is None:
         # format_func показує "Січ" замість 1
-        months = st.multiselect("Місяці", list(range(1, 13)), default=[12, 1, 2],
+        months = st.multiselect("Місяці", list(range(1, 13)), default=[12, 1, 2], key=tab_key("map_months"),
                                 format_func=lambda m: MONTHS[m - 1])
     # Скільки днів горіла кожна клітинка у вибрані місяці (деталі — у firecal/mapgrid.py).
     # Порожньо, якщо в зоні немає пожеж АБО не вибрано жодного місяця — тоді карту не малюємо
@@ -668,10 +790,15 @@ with tab_map:
                                         "%{customdata[1]:.2f}° сх. д.<extra></extra>")
         # map.layers — додаткові шари карти: наша картинка, натягнута на свої 4 кути.
         # below="traces" — під невидимими квадратами, щоб наведення мишею й далі їх «ловило».
-        fig.update_layout(height=600, margin=dict(l=0, r=0, t=0, b=0),
+        fig.update_layout(height=640, margin=dict(l=0, r=0, t=0, b=70),
                           # Без "(згладжено)": з зуму ZOOM_SWITCH видно різку картинку, а шкала в обох та сама (спільний cap)
                           # з роками: інакше число «219 днів» висить у повітрі — за який період?
-                          coloraxis_colorbar_title_text=f"днів горіння<br>за {years_label}",
+                          coloraxis_colorbar=dict(
+                              title=dict(text=f"Днів горіння за {years_label}", side="top"),
+                              # Горизонтально під картою (як у календаря): вертикальна праворуч на телефоні
+                              # забирала пів ширини. yref="container", y=0 — у нижньому відступі margin.b
+                              orientation="h", yref="container", y=0, yanchor="bottom", thickness=12, len=0.8,
+                              ticklabeloverflow="allow"),
                           map_layers=[
                               # Згладжена: видима до зуму ZOOM_SWITCH (maxzoom: на ньому й вище шар ховається)
                               dict(sourcetype="image", source=smooth["source"],
@@ -714,7 +841,7 @@ with tab_cmp:
             fig.add_annotation(x=pos, y=1, yref="paper", text="запуск VIIRS", showarrow=False,
                                yanchor="bottom", font=dict(color=C_NORM))
         fig.update_layout(title=title, yaxis_title=unit, xaxis_type="category", separators=", ", height=340,
-                          margin=dict(l=0, r=0, t=50, b=0), legend=dict(orientation="h", y=-0.15))
+                          margin=dict(l=0, r=0, t=50, b=40), legend=dict(orientation="h", yref="container", y=0, yanchor="bottom"))
         return fig
 
     # --- 1. ПРОБЛЕМА: сирі точки. groupby(рік, датчик).size() — скільки точок; unstack — датчики в колонки
@@ -755,16 +882,18 @@ with tab_cmp:
                                text=[words.fmt_times(v) for v in k.values], textposition="outside",
                                hovertemplate="%{x}: MODIS × %{y:.2f}<extra></extra>"))
         fig.add_hline(y=1, line_dash="dot", line_color=C_NORM, annotation_text="×1 — без поправки")
-        fig.update_layout(title="Поправка для MODIS по місяцях (науково: k = union / MODIS)", separators=", ",
-                          yaxis_title="у скільки разів", height=320, margin=dict(l=0, r=0, t=50, b=0),
+        fig.update_layout(title=dict(text="Поправка для MODIS по місяцях",
+                                     subtitle_text="науково: k = union / MODIS"), separators=", ",
+                          yaxis_title="у скільки разів", height=340, margin=dict(l=0, r=0, t=70, b=0),
                           yaxis_range=[0, float(k.max()) * 1.2])
         st.plotly_chart(fig, width="stretch")
 
 # =====================================================================
 # 6. МЕТОДИКА — текст для журі (Markdown)
 # =====================================================================
-with tab_about:
-    st.markdown("""
+# Тексти методики — дві мови. Умова хакатону англійською, журі може бути міжнародним.
+# УВАГА: міняєш методику — онови ОБИДВА тексти.
+METHOD_UA = """
 #### Словничок: у додатку → науково
 | На екрані | Науковий термін |
 |---|---|
@@ -784,6 +913,7 @@ with tab_about:
 3. **Об'єднання.** Клітинко-день активний, якщо його побачив MODIS **або** VIIRS.
 4. **Калібрування.** У роки, де працюють обидва датчики, рахуємо k = union / MODIS для кожного місяця.
    Для років лише з MODIS (до 2012) ряд = MODIS × k. Так виходить безперервний ряд з 2000 р.
+   k завжди рахуємо на всіх роках вибраної зони, тож слайдер років не змінює минулих значень.
 5. **Календар.** Рік × тиждень; **норма** = медіана по роках; **аномалія** = робастний z ≥ 2;
    **критичні періоди** = 25% тижнів із найбільшою середньою активністю.
    Тижні рахуються від 1 січня (52 на рік, останні 1–2 дні — у 52-му), щоб усі роки мали однакову сітку.
@@ -792,4 +922,41 @@ with tab_about:
    Тенденція — як горіння зазвичай змінювалось у наступні 4 тижні в минулі роки.
 
 Джерело даних: NASA FIRMS (MODIS C6.1, VIIRS S-NPP 375 м).
-""")
+"""
+
+METHOD_EN = """
+#### Glossary: in the app → scientific term
+| On screen (Ukrainian) | Scientific term |
+|---|---|
+| осередок горіння (fire cell) | fire-cell-day: a grid cell with at least one hotspot during the day |
+| зазвичай (usually) | median across years |
+| незвично гарячий тиждень (unusually hot week) | robust z ≥ 2 (median / MAD) |
+| у 9 з 10 років нижче (lower in 9 of 10 years) | 90th percentile |
+| поправка для років до 2012 (pre-2012 correction) | calibration factor k = union / MODIS |
+| достовірність низька / середня / висока | confidence low / nominal / high |
+| обидва супутники, узгоджено (both satellites, harmonized) | harmonized series |
+
+### How we harmonize MODIS and VIIRS
+1. **Common schema.** Both FIRMS formats are mapped to shared fields; MODIS confidence (0–100) and VIIRS
+   confidence (l/n/h) become three classes *low / nominal / high* (MODIS: <30 low, ≥80 high).
+   Only vegetation fires are kept (`type = 0`).
+2. **Common grid.** Points snap to grid cells (0.1° ≈ 8×11 km by default). The unit is the **fire-cell-day**:
+   a cell with at least one hotspot during the day. This removes the pixel-size difference (1 km vs 375 m).
+3. **Union.** A cell-day is active if MODIS **or** VIIRS detected fire there.
+4. **Calibration.** In years when both sensors operate we compute k = union / MODIS for each calendar month.
+   For MODIS-only years (before 2012) the series is MODIS × k. This gives one continuous series from 2000.
+   k is always computed on all years of the selected zone, so the year slider never changes past values.
+5. **Calendar.** Year × week; **normal** = median across years; **anomaly** = robust z ≥ 2;
+   **critical periods** = the 25% of weeks with the highest mean activity.
+   Weeks are counted from 1 January (52 per year, the last 1–2 days go to week 52), so all years share one grid.
+6. **Early warning.** Activity over the last N days is compared with the same calendar days in other years:
+   above 75% of years — 🟡 elevated, above 90% — 🟠 high, robust z ≥ 2 — 🔴 very high.
+   The outlook shows how burning usually changed over the following 4 weeks in past years.
+
+Data source: NASA FIRMS (MODIS C6.1, VIIRS S-NPP 375 m). Coverage: Ukraine.
+"""
+
+with tab_about:
+    # horizontal=True — варіанти мови в рядок, а не стовпчиком
+    lang = st.radio("Мова / Language", ["Українська", "English"], horizontal=True, key=tab_key("about_lang"))
+    st.markdown(METHOD_EN if lang == "English" else METHOD_UA)

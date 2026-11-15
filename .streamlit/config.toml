@@ -14,8 +14,10 @@ baseRadius = "0.6rem"
 
 [theme.light]
 primaryColor = "#ea580c"              # помаранчевий "вогонь" — кнопки, слайдери, активна вкладка
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#fff7ed"  # теплий світлий фон бічної панелі й полів
+# Не чисто білий: на #ffffff сторінка «сліпила», а кольорові панелі здавались блідими (баг-звіт #21)
+# Навіть #fffaf5 «виїдав» очі (власник), тож тло — помітно темніший бежевий, як папір, а не біле
+backgroundColor = "#f3ece2"           # бежевий фон сторінки
+secondaryBackgroundColor = "#e9dccb"  # темніший бежевий фон бічної панелі й полів
 textColor = "#1c1917"
 
 [theme.dark]
