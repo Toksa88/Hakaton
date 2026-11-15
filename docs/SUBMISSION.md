@@ -6,6 +6,9 @@
 > Критерії журі: Impact, Creativity, Validity, Relevance, Presentation.
 >
 > Нижче — готові тексти для кожного поля форми. Перевірте цифри й посилання перед вставкою.
+> Цифри узгоджені зі слайдами (Google Slides): 2000–2025, середнє ~40 тис., 2008 ≈ ×2, 1,6 млн → 1,0 млн,
+> k по місяцях ×2,3…×6,6 (достовірність «середня+», клітинка 0.1°). Без неповного 2000 року (як у додатку
+> за замовчуванням) — ~41 тис. і ×1,9: міняєте одне — міняйте всюди.
 > Місця, які треба заповнити, позначені `TODO`.
 
 ---
@@ -65,9 +68,10 @@ for a chosen area of interest: all of Ukraine, any oblast, groups of oblasts, or
 - *MODIS vs VIIRS*: the problem and our solution explained step by step.
 - Downloads: Excel with a header that records all settings, and CSV for scripts.
 
-**Findings for Ukraine (2001–2025).** About 41 thousand fire-cell-days per year on average;
+**Findings for Ukraine (2000–2025).** About 40 thousand fire-cell-days per year on average;
+1.6 million raw hotspots aligned into one series of about 1.0 million fire-cell-days;
 two fire seasons — spring (March–April, grass burning) and late summer (July–September, after
-harvest); the worst year was 2008 (≈ 1.9× a typical year). Since 24 February 2022 most hotspots in
+harvest), peaking around week 31; the worst year was 2008 (≈ 2× a normal year). Since 24 February 2022 most hotspots in
 the east and south come from the war, not from vegetation fires (67% of points after that date are
 in seven frontline oblasts), so the app has a switch that excludes those oblasts after that date.
 `TODO`: додати знахідки Вані й Назара (#3).

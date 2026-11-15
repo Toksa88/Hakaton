@@ -527,6 +527,23 @@ m4.metric(T("Узгоджено 2 супутники", "2 satellites harmonized"
                  "How — the “MODIS vs VIIRS” tab."))
 
 
+def show_table(df: pd.DataFrame) -> None:
+    """Таблиця на екрані з шириною колонок «по найдовшому тексту».
+
+    НАВІЩО: на телефоні Streamlit сам стискає колонки, і дати обрізались («02.04.200…»),
+    а заголовки — до половини. Тут кожній колонці даємо ширину в пікселях: довжина
+    найдовшого рядка (заголовок або значення) × ~7.5 px (середня ширина літери шрифту Inter) + відступи.
+    Якщо колонки разом ширші за екран — таблиця гортається вбік (пальцем), нічого не обрізається.
+    На широкому екрані width="stretch" однаково розтягує таблицю на всю ширину.
+    """
+    widths = {}
+    for col in df.columns:
+        # astype(str) — кожне значення як текст; .str.len().max() — довжина найдовшого
+        longest = max(len(str(col)), int(df[col].astype(str).str.len().max()) if len(df) else 0)
+        widths[col] = st.column_config.Column(width=int(longest * 7.5) + 28)
+    st.dataframe(df, hide_index=True, width="stretch", column_config=widths)
+
+
 def how_to_read(main: str, rest: str = "", details: str | None = None) -> None:
     """Рядок «💡 Як читати» на початку вкладки: жирне — головне, далі — коротке пояснення.
 
@@ -861,8 +878,9 @@ with tab_crit:
     # потім "зазвичай" (медіана) з fill="tonexty" — заливається простір між ними.
     fig.add_trace(go.Scatter(x=clim.index, y=clim["p90"], line=dict(width=0), showlegend=False, hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=clim.index, y=clim["median"], fill="tonexty", fillcolor=C_HARM + "33",
-                             name=T("Зазвичай (заливка — до «у 9 з 10 років нижче»)",
-                                    "Usual (shading — up to “lower in 9 of 10 years”)"),
+                             # <br> — перенос рядка в легенді: одним рядком текст обрізався на телефоні
+                             name=T("Зазвичай; заливка — до<br>«у 9 з 10 років нижче»",
+                                    "Usual; shading — up to<br>“lower in 9 of 10 years”"),
                              line=dict(color=C_HARM, width=3),
                              customdata=list(zip(wk_dates, clim["p90"])),
                              hovertemplate=T("Тиждень з %{customdata[0]}<br>зазвичай: <b>%{y:,.0f}</b><br>"
@@ -882,19 +900,23 @@ with tab_crit:
     mt_weeks, _ = analytics.month_ticks()
     fig.update_layout(title=dict(text=T("Звичайний рік по тижнях", "Typical year by week"),
                                  subtitle_text=T("осередків горіння за тиждень", "fire cells per week")),
-                      yaxis_title=None, height=440, separators=SEP, margin=dict(l=0, r=0, t=90, b=40),
-                      legend=dict(orientation="h", yref="container", y=0, yanchor="bottom"),
+                      yaxis_title=None, height=440, separators=SEP, margin=dict(l=0, r=0, t=90, b=60),
+                      # entrywidth — ширина запису легенди явно: plotly міряє текст ДО завантаження шрифту
+                      # Inter і на телефоні обрізав кінець («…років ни»)
+                      legend=dict(orientation="h", yref="container", y=0, yanchor="bottom", entrywidth=230),
                       xaxis=dict(tickvals=mt_weeks, ticktext=MONTHS, range=[0.5, 52.5]))
     st.plotly_chart(fig, width="stretch")
     # Таблиця — для тих, кому потрібні точні цифри; на екрані її заміняють смуги на графіку
     with st.expander(T("Таблиця критичних періодів", "Critical periods table")):
         crit_ui = pd.DataFrame({
             T("Період", "Period"): [f"{s:%d.%m} – {e:%d.%m}" for s, e in zip(crit["початок"], crit["кінець"])],
-            T("Частка річного горіння, %", "Share of yearly fires, %"): crit["частка річного горіння, %"],
-            T("Найгарячіше (тиждень з)", "Peak (week from)"):
+            # Короткі заголовки — щоб на телефоні всі три колонки влазили без гортання вбік
+            # fmt_num — число мовою екрана (українською десяткова кома: «23,6», а не «23.6»)
+            T("% за рік", "% of year"): [words.fmt_num(v, 1, EN) for v in crit["частка річного горіння, %"]],
+            T("Пік (тиждень з)", "Peak week from"):
                 [analytics.week_start(2021, w).strftime("%d.%m") for w in crit["пік (тиждень)"]],
         }) if not crit.empty else crit
-        st.dataframe(crit_ui, hide_index=True, width="stretch")
+        show_table(crit_ui)
 
 # =====================================================================
 # 3. АНОМАЛІЇ — конкретні тижні конкретних років, що вибиваються з норми
@@ -931,12 +953,12 @@ with tab_anom:
         # --- Топ-10 гарячих тижнів (сортування за різницею в осередках — див. analytics.top_anomalies)
         top = analytics.top_anomalies(anom, 10)
         st.subheader(T(f"Топ-{len(top)} незвично гарячих тижнів", f"Top {len(top)} unusually hot weeks"))
-        st.dataframe(pd.DataFrame({
+        show_table(pd.DataFrame({
             T("Тиждень з", "Week from"): [analytics.week_start(y, w).strftime("%d.%m.%Y") for y, w in zip(top.year, top.week)],
             T("Осередків", "Fire cells"): top["value"].round().astype(int),
             T("Зазвичай", "Usual"): top["norm"].round().astype(int),
             T("У скільки разів більше", "Times more"): [words.ratio_text(v, n, EN) for v, n in zip(top["value"], top["norm"])],
-        }), hide_index=True, width="stretch")
+        }))
 
         a = anom.copy()  # копія, щоб не зіпсувати закешовані дані
         # Для кожної пари (рік, тиждень) рахуємо дату першого дня тижня — людям зрозуміліше за номер тижня
@@ -961,7 +983,7 @@ with tab_anom:
             table_ui.insert(5, "у скільки разів", [words.ratio_text(v, n) for v, n in zip(a["value"], a["norm"])])
         with st.expander(T(f"Усі незвичні тижні ({len(table)}), зокрема нижче норми",
                            f"All unusual weeks ({len(table)}), including below usual")):
-            st.dataframe(table_ui, hide_index=True, width="stretch")
+            show_table(table_ui)
         # Дві кнопки в один рядок: st.columns ділить ширину навпіл
         b1, b2 = st.columns(2)
         n_hot = (table['тип'] == 'вище норми').sum()
