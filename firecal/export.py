@@ -38,24 +38,29 @@ def calendar_for_export(mat: pd.DataFrame, freq: str, months: list[str]) -> pd.D
     return out
 
 
-def calendar_summary(mat: pd.DataFrame, labels: list[str]) -> dict[str, str]:
+def calendar_summary(mat: pd.DataFrame, labels: list[str], en: bool = False) -> dict[str, str]:
     """Кілька підсумків по календарю для шапки Excel-файлу: що людина хоче знати до того, як дивитись цифри.
 
     mat — календар (рядки = роки, стовпці = тижні/місяці), labels — підписи стовпців для людей
     (дати тижнів або назви місяців), у тому ж порядку, що й mat.columns.
+    en=True — назви підсумків англійською (перемикач мови в додатку).
     """
     if mat.empty:
         return {}
     by_year = mat.sum(axis=1)            # axis=1: сумуємо ВЗДОВЖ рядка -> сума за кожен рік
     by_col = mat.mean(axis=0)            # axis=0: середнє ВЗДОВЖ стовпця -> «норма» кожного тижня/місяця
     peak = labels[list(mat.columns).index(by_col.idxmax())]  # idxmax — стовпець з найбільшим середнім
-    return {
-        # Слова — ті самі, що на екрані («осередки», «найгарячіший рік»), див. firecal/words.py
-        "Осередків горіння за всі роки": f"{by_year.sum():,.0f}".replace(",", " "),
-        "Найгарячіший рік": f"{by_year.idxmax()} ({by_year.max():,.0f})".replace(",", " "),
-        "Найтихіший рік": f"{by_year.idxmin()} ({by_year.min():,.0f})".replace(",", " "),
-        "Пік сезону (в середньому)": str(peak),
-    }
+    # Роздільник тисяч: українською пробіл, англійською кома (як і дає Python)
+    num = (lambda v: f"{v:,.0f}") if en else (lambda v: f"{v:,.0f}".replace(",", " "))
+    keys = (["Fire cells, all years", "Hottest year", "Quietest year", "Season peak (on average)"] if en else
+            # Слова — ті самі, що на екрані («осередки», «найгарячіший рік»), див. firecal/words.py
+            ["Осередків горіння за всі роки", "Найгарячіший рік", "Найтихіший рік", "Пік сезону (в середньому)"])
+    return dict(zip(keys, [
+        num(by_year.sum()),
+        f"{by_year.idxmax()} ({num(by_year.max())})",
+        f"{by_year.idxmin()} ({num(by_year.min())})",
+        str(peak),
+    ]))
 
 
 def to_excel(df: pd.DataFrame, index: bool = False, heatmap: bool = False, sheet: str = "Дані",
