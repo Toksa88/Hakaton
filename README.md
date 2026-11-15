@@ -3,6 +3,13 @@
 Веб-додаток, що гармонізує хот-споти NASA FIRMS від датчиків MODIS і VIIRS у єдиний
 календар активності горіння для вибраної зони: сезонність, критичні періоди, аномалії, карта.
 
+> **In English.** Fire Activity Calendar harmonizes NASA FIRMS active-fire hotspots from MODIS (since 2000)
+> and VIIRS (since 2012) into one continuous series of *fire-cell-days* on a common grid, and shows it as a
+> calendar for a chosen area of interest (Ukraine by default): seasonal patterns, critical periods,
+> anomalies, early warning and a map. Before VIIRS, MODIS is scaled by a monthly factor
+> k = (MODIS ∪ VIIRS) / MODIS learned from the overlap years. The full methodology in English is in the app,
+> tab «ℹ️ Методика» → *English*. Run: `pip install -r requirements.txt`, then `streamlit run app.py`.
+
 > **Новачок у Python/git?** Почніть з [docs/NOVACHKAM.md](docs/NOVACHKAM.md) — там усе з нуля.
 
 ## Запуск

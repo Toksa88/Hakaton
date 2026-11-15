@@ -28,6 +28,10 @@ import pandas as pd
 # Так шлях працює однаково, з якої б папки ви не запустили програму.
 RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"
+# Готові дані для сервера (Streamlit Cloud): уся Україна 2000–2025 в єдиній схемі, ~30 МБ, ЛЕЖИТЬ У GIT.
+# На сервері немає data/raw/*.csv (145 МБ у git не кладемо), тож додаток читає цей файл.
+# Оновити: скачати свіжі CSV і запустити scripts/build_deploy_data.py.
+DEPLOY_FILE = Path(__file__).resolve().parent.parent / "data" / "deploy" / "ukraine.parquet"
 
 # Порядок і назви колонок нашої єдиної схеми. Будь-яка таблиця після normalize() має саме їх.
 #   lat, lon    — широта і довгота точки (градуси)
@@ -207,6 +211,10 @@ def load_cached(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     (дати лишаються датами). Для нього потрібен пакет pyarrow (є в requirements.txt).
     """
     files = sorted(Path(raw_dir).glob("*.csv"))
+    # Жодного CSV (так на сервері деплою) — беремо готові дані з git, якщо вони є.
+    # Свої CSV у data/raw/ завжди важливіші: з ними цей файл не читається.
+    if not files and DEPLOY_FILE.exists():
+        return pd.read_parquet(DEPLOY_FILE)
     # Створюємо папку кешу, якщо її ще немає. parents=True — разом з батьківськими папками,
     # exist_ok=True — не падати, якщо папка вже існує.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
