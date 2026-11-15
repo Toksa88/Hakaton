@@ -89,8 +89,8 @@ def zone_label(zone: str, en: bool = False) -> str:
     return OBLAST_EN[name] + ("" if name.startswith(("м.", "АР")) else " Oblast")
 
 
-def oblast_of(lat, lon) -> np.ndarray:
-    """Назва області для кожної точки (масив рядків; "" — точка поза Україною)."""
+def _oblast_codes(lat, lon) -> np.ndarray:
+    """Номер області для кожної точки (0 — поза Україною); номер = позиція в OBLAST_NAMES."""
     lat = np.asarray(lat, dtype=float)
     lon = np.asarray(lon, dtype=float)
     # Номер рядка/стовпця сітки: на скільки клітинок точка відійшла від лівого нижнього кута
@@ -100,8 +100,22 @@ def oblast_of(lat, lon) -> np.ndarray:
     inside = (row >= 0) & (row < _GRID.shape[0]) & (col >= 0) & (col < _GRID.shape[1])
     code = np.zeros(len(lat), dtype=int)
     code[inside] = _GRID[row[inside], col[inside]]
+    return code
+
+
+def oblast_of(lat, lon) -> np.ndarray:
+    """Назва області для кожної точки (масив рядків; "" — точка поза Україною)."""
     # np.array(OBLAST_NAMES)[code] — замінюємо кожен номер на назву (як map, але для масиву)
-    return np.array(OBLAST_NAMES)[code]
+    return np.array(OBLAST_NAMES)[_oblast_codes(lat, lon)]
+
+
+def oblast_category(lat, lon) -> pd.Categorical:
+    """Те саме, що oblast_of, але одразу як pandas category — для 2 млн точок у додатку.
+
+    Навіщо: oblast_of спершу будує масив РЯДКІВ (на 1,9 млн точок це ~130 МБ тимчасово). Тут
+    рядків не створюємо: category зберігає назви один раз, а для точок — лише їхні номери (codes).
+    """
+    return pd.Categorical.from_codes(_oblast_codes(lat, lon), categories=OBLAST_NAMES)
 
 
 def bbox_of(oblasts: list[str] | None) -> tuple[float, float, float, float]:

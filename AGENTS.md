@@ -164,6 +164,12 @@ data/raw/              сирі CSV (не в git)
   уся Україна 2000–2025 в єдиній схемі). `load.load_cached` читає його, лише коли в `data/raw/` нема CSV;
   свої CSV завжди важливіші. Оновити: `download_firms.py`, потім `scripts/build_deploy_data.py`, закомітити.
   Streamlit Cloud: репо `Toksa88/Hakaton`, гілка `master`, `app.py`, Python 3.11 — налаштовує власник.
+- **Свій VPS (рішення власника 15.11):** https://fire.metalgearbot.fun — Docker (`Dockerfile`, `docker-compose.yml`),
+  `/root/firecal`, контейнер `firecal` у мережі `web` за спільним Caddy; блок сайту — у `Caddyfile` репо
+  metal_gear_bot. Покроково — `docs/DEPLOY.md`. Сервер спільний і має 2 ГБ RAM на всі проєкти.
+- **Пам'ять (інваріант):** точки — у `st.cache_resource` (один об'єкт, НЕ змінювати після повернення),
+  конвеєр повертає лише підсумки (`pts_sum`), у кешів є `max_entries`. Зі `st.cache_data` на точках сервер
+  їв 1,1–1,6 ГБ і ріс з кожною новою зоною; зараз ~0,4 ГБ. Не повертай великі таблиці з кешованих функцій.
 - Здача на Space Apps — 15.11.2026 23:59 (issue #20). Чернетка всіх текстів форми англійською,
   7 слайдів і сценарій відео — `docs/SUBMISSION.md`; місця `TODO` заповнює команда.
 - Телефон перевіряти так: на сторінці `iframe` шириною 390 px з `src="/"` (`resize_window` на

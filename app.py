@@ -19,6 +19,7 @@
 """
 from __future__ import annotations  # дозволяє писати типи на кшталт tuple[int, int] у старших Python
 
+import hashlib                      # md5 — «відбиток» завантажених файлів для ключа кешу
 
 import pandas as pd                 # таблиці (DataFrame) — основний інструмент роботи з даними
 import plotly.express as px         # швидкі інтерактивні графіки "одним рядком"
@@ -85,14 +86,21 @@ CSV_HELP = T("Для читання очима краще «Скачати Excel
 # =====================================================================
 # ДАНІ. Функції з @st.cache_data виконуються лише раз для однакових аргументів.
 # =====================================================================
-@st.cache_data(show_spinner=T("Читаю дані FIRMS…", "Reading FIRMS data…"))
+# ПАМ'ЯТЬ (важливо для сервера з 2 ГБ RAM). Точок ~1,9 млн. Пастки, на які ми наступили:
+#   * st.cache_data на КОЖЕН виклик віддає нову копію результату (розпаковує з pickle) — тобто на
+#     кожен клік ще одна копія всіх точок. Тому точки — у st.cache_resource: один спільний об'єкт
+#     без копій. Його НЕ МОЖНА змінювати після повернення (фільтри в harmonize роблять нові таблиці).
+#   * у кеша без max_entries записів скільки завгодно: кожна нова зона/налаштування лишали в пам'яті
+#     ще одну копію відфільтрованих точок. Тепер конвеєр повертає лише маленькі підсумки + ліміт записів.
+# Так сервер Streamlit займає кілька сотень МБ замість 1,1–1,6 ГБ.
+@st.cache_resource(show_spinner=T("Читаю дані FIRMS…", "Reading FIRMS data…"), max_entries=3)
 def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> tuple[pd.DataFrame, list[str], bool]:
     """Повертає (точки в єдиній схемі, помилки завантажених файлів, чи взяли дані з завантажених).
 
     uploaded — файли, які користувач завантажив через сайт: кортеж пар (ім'я, байти).
     Биті файли (картинка з іменем .csv, чужий CSV без потрібних колонок) не валять додаток:
     їх пропускаємо, а текст помилки повертаємо, щоб показати людині. Якщо добрих файлів
-    немає взагалі (або нічого не завантажено) — читаємо CSV з папки data/raw/.
+    немає взагалі (або нічого не завантажено) — читаємо вбудовані дані (data/raw/ або data/deploy/).
     """
     parts, errors = [], []
     for name, data in uploaded:
@@ -102,19 +110,29 @@ def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> tuple[pd.DataFra
             errors.append(str(e))  # str(помилка) — її текст, вже зрозумілий людині
     # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну без дублікатів
     pts = load.combine(parts) if parts else load.load_cached()
-    # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
-    # далі фільтр за областями просто дивиться в цю колонку
+    # Колонки time, satellite, daynight потрібні лише для прибирання дублікатів (combine) —
+    # далі їх ніхто не читає, тож викидаємо, щоб не тримати в пам'яті
+    pts = pts.drop(columns=["time", "satellite", "daynight"], errors="ignore")
     if not pts.empty:
-        pts["oblast"] = regions.oblast_of(pts["lat"], pts["lon"])
+        # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
+        # далі фільтр за областями просто дивиться в цю колонку.
+        # category — кожна назва області зберігається один раз, а в рядках лише її номер (у рази менше пам'яті)
+        pts["oblast"] = regions.oblast_category(pts["lat"], pts["lon"])
+        pts["sensor"] = pts["sensor"].astype("category")  # лише "MODIS" / "VIIRS"
     return pts, errors, bool(parts)
 
 
-@st.cache_data(show_spinner=T("Гармонізую MODIS і VIIRS…", "Harmonizing MODIS and VIIRS…"))
-def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg, oblasts, exclude_war):
+@st.cache_data(show_spinner=T("Гармонізую MODIS і VIIRS…", "Harmonizing MODIS and VIIRS…"), max_entries=24)
+def run_pipeline(_points: pd.DataFrame, data_key, bbox, start, end, min_conf, cell_deg, oblasts, exclude_war):
     """Увесь конвеєр обробки: точки -> відбір -> клітинки -> денні суми -> гармонізований ряд.
 
+    _points — з підкресленням: Streamlit НЕ хешує такий аргумент (хешувати 1,9 млн рядків на кожен клік
+    дорого). Замість нього в ключ кешу йде data_key — «відбиток» набору даних (які файли завантажено).
+
     Повертає:
-      p           — точки після фільтрів (зона, роки, достовірність)
+      summary     — маленькі підсумки по точках після фільтрів (самі точки не тримаємо — див. ПАМ'ЯТЬ):
+                    n (скільки точок), box (прямокутник навколо них), by_year і by_day (точки за
+                    роками / днями для кожного датчика — для вкладки «MODIS vs VIIRS»)
       cells       — пожежо-клітинко-дні (одна строка = одна клітинка сітки, що горіла в один день)
       daily       — таблиця по днях: скільки клітинок бачив MODIS, VIIRS, обидва, разом (union)
       activity    — ГОЛОВНИЙ результат: єдиний ряд активності горіння по днях
@@ -124,8 +142,17 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf, cell_deg, obl
     Сама логіка — у firecal/harmonize.py (там і пояснення, чому k рахується на всіх роках).
     Тут лише кеш: @st.cache_data не перераховує, якщо параметри ті самі.
     """
-    return harmonize.run_pipeline(points, bbox, start, end, min_conf=min_conf, cell_deg=cell_deg,
-                                  oblasts=oblasts, exclude_war=exclude_war)
+    p, cells, daily, activity, k, viirs_start = harmonize.run_pipeline(
+        _points, bbox, start, end, min_conf=min_conf, cell_deg=cell_deg, oblasts=oblasts, exclude_war=exclude_war)
+    # groupby(рік, датчик).size() — скільки точок; unstack — датчики в колонки (MODIS, VIIRS).
+    # observed=True — лише датчики, що є в даних (sensor тепер category).
+    summary = {
+        "n": len(p),
+        "box": (p["lon"].min(), p["lat"].min(), p["lon"].max(), p["lat"].max()) if len(p) else None,
+        "by_year": p.groupby([p["date"].dt.year, "sensor"], observed=True).size().unstack(fill_value=0),
+        "by_day": p.groupby([p["date"].dt.normalize(), "sensor"], observed=True).size().unstack(fill_value=0),
+    }
+    return summary, cells, daily, activity, k, viirs_start
 
 
 # =====================================================================
@@ -358,13 +385,16 @@ years_label = str(years[0]) if years[0] == years[1] else f"{years[0]}–{years[1
 start, end = pd.Timestamp(years[0], 1, 1), pd.Timestamp(years[1], 12, 31)
 # Запускаємо обробку (з кешу, якщо параметри не змінились)
 # tuple(oblasts) — кеш Streamlit краще працює з кортежами, ніж зі списками
-pts, cells, daily, activity, k, viirs_start = run_pipeline(
-    points, bbox, start, end, min_conf, cell_deg, tuple(oblasts) if oblasts else None, exclude_war)
+# data_key — «відбиток» набору даних для ключа кешу: які файли завантажено (ім'я + md5 вмісту).
+# () — вбудовані дані. Самі точки кеш не хешує (див. run_pipeline).
+data_key = tuple((n, hashlib.md5(b).hexdigest()) for n, b in uploaded) if from_upload else ()
+pts_sum, cells, daily, activity, k, viirs_start = run_pipeline(
+    points, data_key, bbox, start, end, min_conf, cell_deg, tuple(oblasts) if oblasts else None, exclude_war)
 
 # Після фільтрів не лишилось жодної точки — показуємо ОДНЕ зрозуміле повідомлення замість порожніх
 # вкладок. Інакше раннє попередження писало зелене «🟢 низький рівень», хоча насправді даних немає:
 # «пожеж нема» і «ми туди не дивились» — різні речі. st.stop() тут, ДО вкладок, — безпечно.
-if pts.empty:
+if pts_sum["n"] == 0:
     # Чи перетинається прямокутник людини з місцем, де взагалі є наші дані?
     outside = bbox is not None and (bbox[2] < points["lon"].min() or bbox[0] > points["lon"].max()
                                     or bbox[3] < points["lat"].min() or bbox[1] > points["lat"].max())
@@ -382,7 +412,7 @@ if pts.empty:
 if bbox is not None:
     # Свої координати можуть бути набагато ширші за Україну (напр. вся Європа) — центруємо карту
     # не на прямокутнику людини, а на пожежах, що в нього потрапили
-    map_box = (pts["lon"].min(), pts["lat"].min(), pts["lon"].max(), pts["lat"].max())
+    map_box = pts_sum["box"]
 
 # =====================================================================
 # ШАПКА: заголовок і 4 ключові цифри (st.metric = велике число з підписом)
@@ -483,7 +513,7 @@ m3.metric(T("Найгарячіший рік", "Hottest year"), str(hot[0]) if h
           help=T("Рік із найбільшою кількістю осередків. «Звичайний рік» — медіана за вибрані роки.",
                  "The year with the most fire cells. “Typical year” is the median of the selected years."))
 m4.metric(T("Узгоджено 2 супутники", "2 satellites harmonized"),
-          f"{words.fmt_big(len(pts), EN)} → {words.fmt_big(activity.sum(), EN)}",
+          f"{words.fmt_big(pts_sum['n'], EN)} → {words.fmt_big(activity.sum(), EN)}",
           help=T("Скільки точок MODIS і VIIRS ми звели в один ряд осередків горіння за вибрані роки. "
                  "Як саме — вкладка «MODIS vs VIIRS».",
                  "How many MODIS and VIIRS points we merged into one series of fire cells for the selected years. "
@@ -1085,9 +1115,9 @@ with tab_cmp:
 
     # --- 1. ПРОБЛЕМА: сирі точки. groupby(рік, датчик).size() — скільки точок; unstack — датчики в колонки
     st.subheader(T("1. Проблема: VIIRS бачить набагато більше точок", "1. Problem: VIIRS sees many more points"))
-    raw = pts.groupby([pts["date"].dt.year, "sensor"]).size().unstack(fill_value=0)
-    # Те саме по днях — щоб порахувати, у скільки разів VIIRS бачить більше, коли працюють обидва
-    pts_daily = pts.groupby([pts["date"].dt.normalize(), "sensor"]).size().unstack(fill_value=0)
+    # Пораховано в run_pipeline (pts_sum): точки за роками і по днях для кожного датчика.
+    # По днях — щоб порахувати, у скільки разів VIIRS бачить більше, коли працюють обидва
+    raw, pts_daily = pts_sum["by_year"], pts_sum["by_day"]
     r_pts = harmonize.overlap_ratio(pts_daily.get("MODIS", pd.Series(dtype=float)),
                                     pts_daily.get("VIIRS", pd.Series(dtype=float)), viirs_start)
     if r_pts:

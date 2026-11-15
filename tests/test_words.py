@@ -146,6 +146,14 @@ def test_zone_labels_in_english():
     assert regions.zone_label("Сумська область") == "Сумська область"  # українською — без змін
 
 
+def test_oblast_category_same_as_names():
+    # Економна версія (category) дає ті самі області, що й звичайна (рядки)
+    from firecal import regions
+    lat = [50.45, 48.0, 0.0, 46.6]
+    lon = [30.52, 37.8, 0.0, 32.6]
+    assert list(regions.oblast_category(lat, lon)) == list(regions.oblast_of(lat, lon))
+
+
 def test_critical_periods_empty_when_no_fires():
     # Зона без жодної пожежі: не "весь рік критичний", а порожньо
     act = pd.Series(0.0, index=pd.date_range("2018-01-01", "2020-12-31", freq="D"))
