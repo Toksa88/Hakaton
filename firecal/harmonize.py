@@ -75,7 +75,7 @@ def to_fire_cell_days(df: pd.DataFrame, cell_deg: float = 0.1) -> pd.DataFrame:
     """Точки -> пожежо-клітинко-дні з прапорцями, які датчики їх бачили."""
     # Після фільтрів точок може не лишитись — повертаємо порожню таблицю з потрібними колонками
     if df.empty:
-        return pd.DataFrame(columns=["date", "cx", "cy", "lat", "lon", "modis", "viirs", "frp"])
+        return pd.DataFrame(columns=["date", "cx", "cy", "lat", "lon", "modis", "viirs", "terra", "frp"])
     # assign додає нові колонки. cx, cy — номер клітинки сітки по довготі/широті.
     # floor(lon / 0.1) = "в якій смузі шириною 0.1° лежить точка": 30.37 -> 303, 30.39 -> 303 (та сама клітинка)
     # floor (округлення ВНИЗ), а не round: так межі клітинок рівні — 30.30..30.39(9) завжди клітинка 303.
@@ -85,12 +85,16 @@ def to_fire_cell_days(df: pd.DataFrame, cell_deg: float = 0.1) -> pd.DataFrame:
         cy=np.floor(df["lat"] / cell_deg).astype(int),
         is_modis=df["sensor"].eq("MODIS"),
         is_viirs=df["sensor"].eq("VIIRS"),
+        # is_terra — точка MODIS саме із супутника Terra (потрібно для поправки 2000–2002, див. aqua_factors).
+        # Якщо колонки satellite немає (чужий файл) — вважаємо, що Terra ніде нема, і поправки не буде.
+        is_terra=df["satellite"].astype(str).eq("Terra") if "satellite" in df else False,
     )
     # groupby: збираємо всі точки з однаковими (день, клітинка) в одну групу = один пожежо-клітинко-день.
     # agg каже, що порахувати для групи: any = "чи була хоч одна точка MODIS/VIIRS", sum = сумарна потужність FRP.
     g = d.groupby(["date", "cx", "cy"], as_index=False).agg(
         modis=("is_modis", "any"),
         viirs=("is_viirs", "any"),
+        terra=("is_terra", "any"),
         frp=("frp", "sum"),
     )
     # Тепер g — по одному рядку на (день, клітинка): колонки date, cx, cy, modis, viirs, frp.
@@ -106,7 +110,7 @@ def daily_counts(cells: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     # `start or "2020-01-01"` = беремо start, а якщо його не передали (None) — запасну дату.
     if cells.empty:
         idx = pd.date_range(start or "2020-01-01", end or "2020-12-31", freq="D")
-        return pd.DataFrame(0, index=idx, columns=["modis", "viirs", "both", "union", "frp"])
+        return pd.DataFrame(0, index=idx, columns=["modis", "viirs", "terra", "both", "union", "frp"])
     # Додаємо дві допоміжні колонки до кожної клітинко-дня:
     #   both  — True, якщо клітинку бачили ОБИДВА датчики (& = логічне "і" по рядках)
     #   union — завжди True: кожен рядок і є подією "MODIS або VIIRS" (так його легко порахувати сумою)
@@ -116,7 +120,7 @@ def daily_counts(cells: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     )
     # Групуємо по дню і рахуємо: sum від True/False = кількість клітинок, де умова True
     daily = c.groupby("date").agg(
-        modis=("modis", "sum"), viirs=("viirs", "sum"),
+        modis=("modis", "sum"), viirs=("viirs", "sum"), terra=("terra", "sum"),
         both=("both", "sum"), union=("union", "sum"), frp=("frp", "sum"),
     )
     # Тепер daily — по рядку на кожен день, У ЯКОМУ БУЛИ пожежі; індекс (ліва "колонка") = дата.
@@ -156,6 +160,36 @@ def calibration_factors(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -
     return k.reindex(range(1, 13)).fillna(k_all).clip(lower=1.0)
 
 
+def aqua_factors(daily: pd.DataFrame, aqua_start: pd.Timestamp | None,
+                 viirs_start: pd.Timestamp | None) -> pd.Series:
+    """
+    Поправка r[місяць] для днів ДО запуску Aqua (04.07.2002), коли MODIS = лише супутник Terra.
+
+    Навіщо: k (calibration_factors) рахується в 2012+, коли MODIS = Terra + Aqua. Пара бачить
+    приблизно в 1,8 раза більше осередків, ніж одна Terra (Aqua пролітає по обіді, коли с/г пали
+    в розпалі). Без цієї поправки 2001 рік виходив майже вдвічі меншим, ніж насправді.
+    r = (усі осередки MODIS) / (осередки, які бачила Terra) у роки, коли літають обидва MODIS.
+    Беремо 2002–2011 (ближче до 2000–2002, ніж 2012+, коли орбіта Terra вже "попливла");
+    якщо цих років у даних нема — усі дні після старту Aqua.
+    1.0 для всіх місяців — якщо Aqua в даних нема або невідомо, який супутник (колонки satellite нема).
+    """
+    ones = pd.Series(1.0, index=range(1, 13))
+    if aqua_start is None or "terra" not in daily or daily["terra"].sum() == 0:
+        return ones
+    both_modis = daily[daily.index >= aqua_start]  # дні, коли літають і Terra, і Aqua
+    if viirs_start is not None and (both_modis.index < viirs_start).any():
+        both_modis = both_modis[both_modis.index < viirs_start]
+    by_m = both_modis.groupby(both_modis.index.month)[["modis", "terra"]].sum()
+    tot = both_modis[["modis", "terra"]].sum()
+    if tot["terra"] <= 0:
+        return ones
+    r_all = tot["modis"] / tot["terra"]  # запасний загальний коефіцієнт
+    r = by_m["modis"] / by_m["terra"].replace(0, np.nan)
+    r[by_m["terra"] < 20] = np.nan  # мало подій -> шумно -> беремо загальний
+    # clip(lower=1): Terra+Aqua не можуть бачити менше, ніж одна Terra
+    return r.reindex(range(1, 13)).fillna(r_all).clip(lower=1.0)
+
+
 def overlap_ratio(modis: pd.Series, viirs: pd.Series, viirs_start: pd.Timestamp | None) -> float | None:
     """У скільки разів VIIRS бачить більше, ніж MODIS, коли працюють обидва (з дня viirs_start).
 
@@ -171,11 +205,13 @@ def overlap_ratio(modis: pd.Series, viirs: pd.Series, viirs_start: pd.Timestamp 
     return float(v / m) if m > 0 else None
 
 
-def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> tuple[pd.Series, pd.Series]:
+def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None,
+                      aqua_start: pd.Timestamp | None = None) -> tuple[pd.Series, pd.Series]:
     """
     Єдиний ряд "активності горіння":
       * де є VIIRS -> union (MODIS ∪ VIIRS)
       * до появи VIIRS -> MODIS × k[місяць]
+      * до появи Aqua (лише Terra) -> MODIS × k[місяць] × r[місяць] (див. aqua_factors)
     Повертає (ряд, коефіцієнти k).
     """
     k = calibration_factors(daily, viirs_start)
@@ -183,6 +219,11 @@ def harmonized_series(daily: pd.DataFrame, viirs_start: pd.Timestamp | None) -> 
     # daily.index.month — номер місяця кожного дня; .map(k) — замінює номер на k цього місяця;
     # .to_numpy() — робимо звичайний масив, щоб множення йшло "рядок до рядка" без вирівнювання індексів.
     est = daily["modis"] * daily.index.month.map(k).to_numpy()
+    if aqua_start is not None:
+        r = aqua_factors(daily, aqua_start, viirs_start)
+        # Дні до старту Aqua додатково множимо на r свого місяця; решта днів — на 1 (без змін)
+        extra = np.where(daily.index < aqua_start, daily.index.month.map(r).to_numpy(), 1.0)
+        est = est * extra
     # rename("activity") — просто дає ряду назву (вона з'явиться в підписах/таблицях)
     if viirs_start is None:
         return est.rename("activity"), k
@@ -215,6 +256,11 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nomina
     # бо це властивість супутника, а не регіону.
     viirs = points.loc[points["sensor"] == "VIIRS", "date"]
     viirs_start = viirs.min() if not viirs.empty else None
+    # Так само дата старту Aqua (другого MODIS) — до неї MODIS = лише Terra (див. aqua_factors)
+    aqua_start = None
+    if "satellite" in points:
+        aqua = points.loc[points["satellite"].astype(str) == "Aqua", "date"]
+        aqua_start = aqua.min() if not aqua.empty else None
 
     # Повний період даних: від ПЕРШОГО до ОСТАННЬОГО дня, за який є хоч якісь знімки (усі зони разом).
     # На ньому рахуємо денні суми і k — незалежно від слайдера.
@@ -228,7 +274,7 @@ def run_pipeline(points: pd.DataFrame, bbox, start, end, min_conf: str = "nomina
     p_all = filter_points(points, bbox=bbox, min_conf=min_conf, oblasts=oblasts, exclude_war=exclude_war)
     cells_all = to_fire_cell_days(p_all, cell_deg=cell_deg)
     daily_all = daily_counts(cells_all, start=full_start, end=full_end)
-    activity_all, k = harmonized_series(daily_all, viirs_start)
+    activity_all, k = harmonized_series(daily_all, viirs_start, aqua_start)
 
     # Тепер лише обрізаємо до вибраних років. .loc[start:end] для таблиці з датами в індексі
     # = "рядки з датами від start до end включно".

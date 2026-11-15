@@ -110,15 +110,18 @@ def get_points(uploaded: tuple[tuple[str, bytes], ...] = ()) -> tuple[pd.DataFra
             errors.append(str(e))  # str(помилка) — її текст, вже зрозумілий людині
     # для кожного файлу: байти -> таблиця -> єдина схема; потім склеюємо всі в одну без дублікатів
     pts = load.combine(parts) if parts else load.load_cached()
-    # Колонки time, satellite, daynight потрібні лише для прибирання дублікатів (combine) —
-    # далі їх ніхто не читає, тож викидаємо, щоб не тримати в пам'яті
-    pts = pts.drop(columns=["time", "satellite", "daynight"], errors="ignore")
+    # Колонки time, daynight потрібні лише для прибирання дублікатів (combine) —
+    # далі їх ніхто не читає, тож викидаємо, щоб не тримати в пам'яті.
+    # satellite лишаємо: за ним видно роки, коли літала лише Terra (поправка в harmonize.aqua_factors)
+    pts = pts.drop(columns=["time", "daynight"], errors="ignore")
     if not pts.empty:
         # Один раз визначаємо область кожної точки (миттєво, див. regions.oblast_of) —
         # далі фільтр за областями просто дивиться в цю колонку.
         # category — кожна назва області зберігається один раз, а в рядках лише її номер (у рази менше пам'яті)
         pts["oblast"] = regions.oblast_category(pts["lat"], pts["lon"])
         pts["sensor"] = pts["sensor"].astype("category")  # лише "MODIS" / "VIIRS"
+        if "satellite" in pts:
+            pts["satellite"] = pts["satellite"].astype("category")  # Terra / Aqua / N — кілька назв, мало пам'яті
     return pts, errors, bool(parts)
 
 
@@ -1228,6 +1231,8 @@ METHOD_UA = """
 3. **Об'єднання.** Клітинко-день активний, якщо його побачив MODIS **або** VIIRS.
 4. **Калібрування.** У роки, де працюють обидва датчики, рахуємо k = union / MODIS для кожного місяця.
    Для років лише з MODIS (до 2012) ряд = MODIS × k. Так виходить безперервний ряд з 2000 р.
+   До 04.07.2002 літав лише один MODIS (Terra, без Aqua), тож ці дні ще множимо на r = (Terra+Aqua) / Terra
+   для кожного місяця (рахуємо у 2002–2011, ≈1,8).
    k завжди рахуємо на всіх роках вибраної зони, тож слайдер років не змінює минулих значень.
 5. **Календар.** Рік × тиждень; **норма** = медіана по роках; **аномалія** = робастний z ≥ 2;
    **критичні періоди** = 25% тижнів із найбільшою середньою активністю.
@@ -1260,6 +1265,8 @@ METHOD_EN = """
 3. **Union.** A cell-day is active if MODIS **or** VIIRS detected fire there.
 4. **Calibration.** In years when both sensors operate we compute k = union / MODIS for each calendar month.
    For MODIS-only years (before 2012) the series is MODIS × k. This gives one continuous series from 2000.
+   Before 04.07.2002 only one MODIS flew (Terra, no Aqua yet), so those days are also multiplied by
+   r = (Terra+Aqua) / Terra per month (computed on 2002–2011, ≈1.8).
    k is always computed on all years of the selected zone, so the year slider never changes past values.
 5. **Calendar.** Year × week; **normal** = median across years; **anomaly** = robust z ≥ 2;
    **critical periods** = the 25% of weeks with the highest mean activity.

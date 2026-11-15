@@ -368,3 +368,23 @@ def test_deploy_file_used_only_without_csv(tmp_path, monkeypatch):
     _modis([(48, 35, 320, "2021-05-01", 1000, 60, 5, 0), (48, 36, 320, "2021-05-01", 1000, 60, 5, 0)]).to_csv(
         raw / "modis.csv", index=False)
     assert len(load.load_cached(raw)) == 2          # є CSV -> deploy-файл ігнорується
+
+
+def test_terra_only_days_get_aqua_correction():
+    # До старту Aqua MODIS = лише Terra. Пара Terra+Aqua бачить удвічі більше клітинок,
+    # тож дні "лише Terra" мають додатково множитись на r ≈ 2 (а не лишатися заниженими).
+    rows = []
+    for d in pd.date_range("2001-01-01", "2004-12-31", freq="D"):
+        rows.append((50.05, 30.05, d, "MODIS", "Terra"))          # Terra щодня в клітинці A
+        if d >= pd.Timestamp("2002-07-04"):
+            rows.append((50.55, 30.55, d, "MODIS", "Aqua"))       # Aqua щодня в іншій клітинці B
+    pts = pd.DataFrame(rows, columns=["lat", "lon", "date", "sensor", "satellite"])
+    pts["conf_class"], pts["type"], pts["frp"] = "nominal", 0, 1.0
+    _, _, daily, act, k, vs = harmonize.run_pipeline(pts, None, "2001-01-01", "2004-12-31")
+    assert vs is None
+    # 2003: обидва MODIS -> 2 клітинки на день; 2001: лише Terra (1 клітинка) × r=2 -> теж 2
+    assert act.loc["2003-03-01"] == 2
+    assert abs(act.loc["2001-03-01"] - 2.0) < 1e-9
+    # Без колонки satellite поправки немає (не знаємо, де Terra)
+    _, _, _, act2, _, _ = harmonize.run_pipeline(pts.drop(columns="satellite"), None, "2001-01-01", "2004-12-31")
+    assert act2.loc["2001-03-01"] == 1
