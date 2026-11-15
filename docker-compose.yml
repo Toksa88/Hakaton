@@ -1,0 +1,24 @@
+# Запуск на VPS поруч з іншими проєктами (інструкція — docs/DEPLOY.md).
+# Назовні порт НЕ відкриваємо: сайт віддає спільний Caddy (контейнер metal-gear-caddy) за адресою
+# https://fire.metalgearbot.fun — він ходить сюди за іменем контейнера firecal через мережу web.
+services:
+  firecal:
+    build: .
+    image: firecal:latest
+    container_name: firecal
+    restart: unless-stopped          # піднімається сам після перезавантаження сервера чи падіння
+    # Пам'ять: на сервері 2 ГБ на всі проєкти. Застосунку вистачає ~0,5 ГБ (див. ПАМ'ЯТЬ в app.py);
+    # ліміт 1 ГБ — щоб у разі чого ядро зупинило лише цей контейнер, а не бази й ботів поруч.
+    mem_limit: 1g
+    memswap_limit: 1500m
+    networks:
+      - web
+    healthcheck:                     # Streamlit сам відповідає "ok" на цю адресу, коли готовий
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  web:
+    external: true                   # мережа вже існує — її створив стек Caddy (metal_gear_bot)

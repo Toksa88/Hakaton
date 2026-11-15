@@ -114,6 +114,46 @@ def test_top_anomalies_sorts_by_difference_not_ratio():
     assert list(top["week"]) == [14, 2]  # "нижче норми" не потрапляє в топ
 
 
+def test_english_numbers_and_words():
+    # Англійською — англійський формат чисел і без українських відмінків
+    assert words.fmt_num(12345.6, 1, en=True) == "12,345.6"
+    assert words.fmt_big(1_630_000, en=True) == "1.6M"
+    assert words.fmt_big(41_300, en=True) == "41K"
+    assert words.times_words(6.84, en=True) == "6.8 times"
+    assert words.compare_to_usual(70, 10, en=True) == "7.0 times more than usual"
+    assert words.ratio_text(5, 0, en=True) == "usually almost zero"
+    ew = {"as_of": pd.Timestamp("2020-04-10"), "current": 3400, "median": 500}
+    assert "6.8 times more than usual for these days" in words.warning_sentence(ew, 7, en=True)
+    vals, texts = words.scale_ticks(4530, en=True)
+    assert texts[0] == "0 · few" and texts[-1] == "4,530+ · many"
+
+
+def test_rounding_edges():
+    # 9.97 округлюється до 10 — пишемо як ціле, а не "10,0"; 999 600 — це "1,0 млн", а не "1 000 тис."
+    assert words.fmt_times(9.97) == "×10"
+    assert words.times_words(9.97) == "10 разів"
+    assert words.fmt_big(999_600) == f"1,0{NB}млн"
+
+
+def test_zone_labels_in_english():
+    from firecal import regions
+    # Кожна зона має англійську назву без кирилиці
+    for z in regions.ZONES:
+        en = regions.zone_label(z, en=True)
+        assert en and not any("а" <= ch.lower() <= "я" or ch in "іїєґІЇЄҐ" for ch in en), (z, en)
+    assert regions.zone_label("Сумська область", en=True) == "Sumy Oblast"
+    assert regions.zone_label("м. Київ", en=True) == "Kyiv City"
+    assert regions.zone_label("Сумська область") == "Сумська область"  # українською — без змін
+
+
+def test_oblast_category_same_as_names():
+    # Економна версія (category) дає ті самі області, що й звичайна (рядки)
+    from firecal import regions
+    lat = [50.45, 48.0, 0.0, 46.6]
+    lon = [30.52, 37.8, 0.0, 32.6]
+    assert list(regions.oblast_category(lat, lon)) == list(regions.oblast_of(lat, lon))
+
+
 def test_critical_periods_empty_when_no_fires():
     # Зона без жодної пожежі: не "весь рік критичний", а порожньо
     act = pd.Series(0.0, index=pd.date_range("2018-01-01", "2020-12-31", freq="D"))

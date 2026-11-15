@@ -45,9 +45,52 @@ ZONES: dict[str, list[str] | None] = {
 # + кожна область окремо, за абеткою (sorted). "м. Київ" і "м. Севастополь" теж — це окремі одиниці.
 ZONES.update({f"{n} область" if not n.startswith(("м.", "АР")) else n: [n] for n in sorted(OBLAST_NAMES[1:])})
 
+# --- Англійські назви для перемикача мови. Ключ зони (українська назва) НЕ міняється — він живе в
+# st.session_state["zone"] і в кнопках-прикладах; англійською лише ПОКАЗУЄМО (zone_label).
+OBLAST_EN = {
+    "Вінницька": "Vinnytsia", "Волинська": "Volyn", "Дніпропетровська": "Dnipropetrovsk",
+    "Донецька": "Donetsk", "Житомирська": "Zhytomyr", "Закарпатська": "Zakarpattia",
+    "Запорізька": "Zaporizhzhia", "Івано-Франківська": "Ivano-Frankivsk", "Київська": "Kyiv",
+    "Кіровоградська": "Kirovohrad", "Луганська": "Luhansk", "Львівська": "Lviv",
+    "Миколаївська": "Mykolaiv", "Одеська": "Odesa", "Полтавська": "Poltava", "Рівненська": "Rivne",
+    "Сумська": "Sumy", "Тернопільська": "Ternopil", "Харківська": "Kharkiv", "Херсонська": "Kherson",
+    "Хмельницька": "Khmelnytskyi", "Черкаська": "Cherkasy", "Чернівецька": "Chernivtsi",
+    "Чернігівська": "Chernihiv", "м. Київ": "Kyiv City", "АР Крим": "Crimea (AR)",
+    "м. Севастополь": "Sevastopol City",
+}
+# Групи областей — назви вручну (області в дужках — з OBLAST_EN)
+_GROUP_EN = {
+    "Україна (вся)": "Ukraine (all)",
+    "Прифронтові області (з 2022)": "Frontline oblasts (since 2022)",
+}
+_GROUP_WORD_EN = {"Південь": "South", "Схід": "East", "Полісся": "Polissia", "Захід": "West"}
 
-def oblast_of(lat, lon) -> np.ndarray:
-    """Назва області для кожної точки (масив рядків; "" — точка поза Україною)."""
+
+def oblast_label(name: str, en: bool = False) -> str:
+    """Назва області для людей: "Донецька" -> "Донецька" або "Donetsk"."""
+    return OBLAST_EN.get(name, name) if en else name
+
+
+def zone_label(zone: str, en: bool = False) -> str:
+    """Назва зони потрібною мовою. Українська — як є; англійська — перекладена.
+
+    "Полісся (Житомирська, Київська, ...)" -> "Polissia (Zhytomyr, Kyiv, ...)",
+    "Сумська область" -> "Sumy Oblast", "м. Київ" -> "Kyiv City".
+    Невідома назва (напр. CUSTOM_ZONE з app.py) повертається без змін — її перекладає сам app.py.
+    """
+    if not en or zone not in ZONES:
+        return zone
+    if zone in _GROUP_EN:
+        return _GROUP_EN[zone]
+    word = zone.split(" (")[0]
+    if word in _GROUP_WORD_EN:  # група: слово + перелік областей у дужках
+        return f"{_GROUP_WORD_EN[word]} ({', '.join(OBLAST_EN[n] for n in ZONES[zone])})"
+    (name,) = ZONES[zone]       # одна область
+    return OBLAST_EN[name] + ("" if name.startswith(("м.", "АР")) else " Oblast")
+
+
+def _oblast_codes(lat, lon) -> np.ndarray:
+    """Номер області для кожної точки (0 — поза Україною); номер = позиція в OBLAST_NAMES."""
     lat = np.asarray(lat, dtype=float)
     lon = np.asarray(lon, dtype=float)
     # Номер рядка/стовпця сітки: на скільки клітинок точка відійшла від лівого нижнього кута
@@ -57,8 +100,22 @@ def oblast_of(lat, lon) -> np.ndarray:
     inside = (row >= 0) & (row < _GRID.shape[0]) & (col >= 0) & (col < _GRID.shape[1])
     code = np.zeros(len(lat), dtype=int)
     code[inside] = _GRID[row[inside], col[inside]]
+    return code
+
+
+def oblast_of(lat, lon) -> np.ndarray:
+    """Назва області для кожної точки (масив рядків; "" — точка поза Україною)."""
     # np.array(OBLAST_NAMES)[code] — замінюємо кожен номер на назву (як map, але для масиву)
-    return np.array(OBLAST_NAMES)[code]
+    return np.array(OBLAST_NAMES)[_oblast_codes(lat, lon)]
+
+
+def oblast_category(lat, lon) -> pd.Categorical:
+    """Те саме, що oblast_of, але одразу як pandas category — для 2 млн точок у додатку.
+
+    Навіщо: oblast_of спершу будує масив РЯДКІВ (на 1,9 млн точок це ~130 МБ тимчасово). Тут
+    рядків не створюємо: category зберігає назви один раз, а для точок — лише їхні номери (codes).
+    """
+    return pd.Categorical.from_codes(_oblast_codes(lat, lon), categories=OBLAST_NAMES)
 
 
 def bbox_of(oblasts: list[str] | None) -> tuple[float, float, float, float]:

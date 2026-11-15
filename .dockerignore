@@ -1,0 +1,10 @@
+# Що НЕ кладемо в docker-образ: локальне оточення, кеші, сирі CSV (сервер читає data/deploy/ukraine.parquet)
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+data/raw
+data/cache
+.streamlit/secrets.toml
